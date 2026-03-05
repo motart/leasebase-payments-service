@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.github
+scripts
+*.md
+.env*
+deploy.*.json
