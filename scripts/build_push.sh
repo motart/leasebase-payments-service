@@ -20,9 +20,8 @@ AWS_ACCOUNT_ID=$(jq -r '.aws_account_id' "$CONFIG")
 ECR_REPO=$(jq -r '.ecr_repository' "$CONFIG")
 
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-SHA7="${GITHUB_SHA:0:7}"
 IMAGE_BASE="${ECR_REGISTRY}/${ECR_REPO}"
-IMAGE_SHA="${IMAGE_BASE}:${SHA7}"
+IMAGE_SHA="${IMAGE_BASE}:${GITHUB_SHA}"
 IMAGE_LATEST="${IMAGE_BASE}:dev-latest"
 
 echo "▸ Building image: ${IMAGE_SHA}"
@@ -54,10 +53,16 @@ docker push "${IMAGE_SHA}"
 echo "▸ Pushing ${IMAGE_LATEST}"
 docker push "${IMAGE_LATEST}"
 
+# ── Print build info ─────────────────────────────────────────────────────────
+DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_LATEST}" 2>/dev/null | sed 's/.*@//' || echo "unknown")
 echo "✓ Done — pushed ${IMAGE_SHA} and ${IMAGE_LATEST}"
+echo "  Commit SHA : ${GITHUB_SHA}"
+echo "  Image digest: ${DIGEST}"
 
 # ── Export for downstream steps ──────────────────────────────────────────────
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  echo "image=${IMAGE_SHA}" >> "$GITHUB_OUTPUT"
-  echo "sha7=${SHA7}" >> "$GITHUB_OUTPUT"
+  echo "image=${IMAGE_LATEST}" >> "$GITHUB_OUTPUT"
+  echo "image_sha=${IMAGE_SHA}" >> "$GITHUB_OUTPUT"
+  echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+  echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 fi

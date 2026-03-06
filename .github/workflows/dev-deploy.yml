@@ -71,6 +71,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Print build info ────────────────────────────────────────────────
+      - name: Print build info
+        run: |
+          echo "══════════════════════════════════════════════"
+          echo "  Commit SHA : ${{ github.sha }}"
+          echo "  Image (SHA): ${{ steps.build.outputs.image_sha }}"
+          echo "  Image (dev): ${{ steps.build.outputs.image }}"
+          echo "  Digest     : ${{ steps.build.outputs.digest }}"
+          echo "══════════════════════════════════════════════"
+
       # ── Deploy to ECS ──────────────────────────────────────────────────
       - name: Deploy to ECS Dev
         run: bash scripts/deploy_ecs.sh
