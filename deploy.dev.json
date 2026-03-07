@@ -1,0 +1,11 @@
+{
+  "aws_region": "us-west-2",
+  "aws_account_id": "335021149718",
+  "ecr_repository": "leasebase-dev-v2-payments-service",
+  "ecs_cluster": "leasebase-dev-v2-cluster",
+  "ecs_service": "leasebase-dev-v2-payments-service",
+  "task_family": "leasebase-dev-v2-payments-service",
+  "container_name": "payments-service",
+  "execution_role": "leasebase-dev-v2-ecs-execution",
+  "task_role": "leasebase-dev-v2-payments-service-task"
+}
