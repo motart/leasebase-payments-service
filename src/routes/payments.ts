@@ -57,33 +57,7 @@ router.post('/', requireAuth, validateBody(createPaymentSchema),
   }
 );
 
-// GET /:id
-router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const user = (req as AuthenticatedRequest).user;
-    const row = await queryOne(`SELECT * FROM payments WHERE id = $1 AND organization_id = $2`, [req.params.id, user.orgId]);
-    if (!row) throw new NotFoundError('Payment not found');
-    res.json({ data: row });
-  } catch (err) { next(err); }
-});
-
-// PUT /:id
-router.put('/:id', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF),
-  validateBody(z.object({ status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELED']).optional(), method: z.string().optional() })),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const user = (req as AuthenticatedRequest).user;
-      const { status, method } = req.body;
-      const row = await queryOne(
-        `UPDATE payments SET status = COALESCE($1, status), method = COALESCE($2, method), updated_at = NOW()
-         WHERE id = $3 AND organization_id = $4 RETURNING *`,
-        [status, method, req.params.id, user.orgId]
-      );
-      if (!row) throw new NotFoundError('Payment not found');
-      res.json({ data: row });
-    } catch (err) { next(err); }
-  }
-);
+// ── Ledger routes (MUST be above /:id to prevent Express param shadowing) ───
 
 // GET /ledger - List ledger entries
 router.get('/ledger', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF, UserRole.OWNER),
@@ -115,6 +89,36 @@ router.post('/ledger', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_
         [user.orgId, leaseId, type, amount, currency, dueDate, description || null]
       );
       res.status(201).json({ data: row });
+    } catch (err) { next(err); }
+  }
+);
+
+// ── Single-payment routes (/:id AFTER named routes) ─────────────────────────
+
+// GET /:id
+router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const row = await queryOne(`SELECT * FROM payments WHERE id = $1 AND organization_id = $2`, [req.params.id, user.orgId]);
+    if (!row) throw new NotFoundError('Payment not found');
+    res.json({ data: row });
+  } catch (err) { next(err); }
+});
+
+// PUT /:id
+router.put('/:id', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF),
+  validateBody(z.object({ status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELED']).optional(), method: z.string().optional() })),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const { status, method } = req.body;
+      const row = await queryOne(
+        `UPDATE payments SET status = COALESCE($1, status), method = COALESCE($2, method), updated_at = NOW()
+         WHERE id = $3 AND organization_id = $4 RETURNING *`,
+        [status, method, req.params.id, user.orgId]
+      );
+      if (!row) throw new NotFoundError('Payment not found');
+      res.json({ data: row });
     } catch (err) { next(err); }
   }
 );
