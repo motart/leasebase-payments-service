@@ -86,7 +86,7 @@ describe('Data Isolation — payments-service', () => {
       expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(403);
     });
     it('returns 201 for PM_STAFF', async () => {
-      activeUser.current = user({ role: 'OWNER' });
+      activeUser.current = user({ role: 'PM_STAFF' });
       mockQueryOne.mockResolvedValueOnce({ id: 'pay-1', status: 'PENDING' });
       expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(201);
     });
