@@ -57,10 +57,47 @@ router.post('/', requireAuth, validateBody(createPaymentSchema),
   }
 );
 
+// ── Tenant-scoped routes (MUST be above /:id to prevent Express param shadowing) ──
+
+// GET /mine - Tenant's own payments (resolved via JWT → tenant_profiles → lease_id)
+router.get('/mine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthenticatedRequest).user;
+    const pg = parsePagination(req.query as Record<string, unknown>);
+    const offset = (pg.page - 1) * pg.limit;
+
+    // Resolve tenant's lease(s) via tenant_profiles compat view,
+    // then return payments scoped to those leases within the org.
+    const [rows, countResult] = await Promise.all([
+      query(
+        `SELECT p.id, p.organization_id, p.lease_id, p.amount, p.currency,
+                p.method, p.status, p.ledger_entry_id, p.created_at, p.updated_at
+         FROM payments p
+         JOIN tenant_profiles tp ON p.lease_id = tp.lease_id
+         JOIN public."User" u ON tp.user_id = u.id
+         WHERE tp.user_id = $1 AND u."organizationId" = $2
+         ORDER BY p.created_at DESC
+         LIMIT $3 OFFSET $4`,
+        [user.userId, user.orgId, pg.limit, offset],
+      ),
+      queryOne<{ count: string }>(
+        `SELECT COUNT(*) as count
+         FROM payments p
+         JOIN tenant_profiles tp ON p.lease_id = tp.lease_id
+         JOIN public."User" u ON tp.user_id = u.id
+         WHERE tp.user_id = $1 AND u."organizationId" = $2`,
+        [user.userId, user.orgId],
+      ),
+    ]);
+
+    res.json({ data: rows, meta: paginationMeta(Number(countResult?.count || 0), pg) });
+  } catch (err) { next(err); }
+});
+
 // ── Ledger routes (MUST be above /:id to prevent Express param shadowing) ───
 
 // GET /ledger - List ledger entries
-router.get('/ledger', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF, UserRole.OWNER),
+router.get('/ledger', requireAuth, requireRole(UserRole.OWNER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
@@ -77,7 +114,7 @@ router.get('/ledger', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_S
 );
 
 // POST /ledger - Create ledger entry
-router.post('/ledger', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF),
+router.post('/ledger', requireAuth, requireRole(UserRole.OWNER),
   validateBody(createLedgerSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -106,7 +143,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 });
 
 // PUT /:id
-router.put('/:id', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF),
+router.put('/:id', requireAuth, requireRole(UserRole.OWNER),
   validateBody(z.object({ status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELED']).optional(), method: z.string().optional() })),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
