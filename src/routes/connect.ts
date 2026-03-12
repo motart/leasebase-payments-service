@@ -29,7 +29,7 @@ const onboardSchema = z.object({
 router.post(
   '/onboard',
   requireAuth,
-  requireRole(UserRole.ORG_ADMIN, UserRole.OWNER),
+  requireRole(UserRole.OWNER),
   validateBody(onboardSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -109,7 +109,7 @@ router.post(
 router.get(
   '/status',
   requireAuth,
-  requireRole(UserRole.ORG_ADMIN, UserRole.OWNER, UserRole.PM_STAFF),
+  requireRole(UserRole.OWNER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
@@ -159,7 +159,7 @@ router.get(
 router.post(
   '/dashboard-link',
   requireAuth,
-  requireRole(UserRole.ORG_ADMIN, UserRole.OWNER),
+  requireRole(UserRole.OWNER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!isStripeConfigured()) {
