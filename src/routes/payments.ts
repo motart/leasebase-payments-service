@@ -26,8 +26,8 @@ const createLedgerSchema = z.object({
   description: z.string().optional(),
 });
 
-// GET / - List payments
-router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+// GET / - List payments (admin only; tenants use /mine)
+router.get('/', requireAuth, requireRole(UserRole.OWNER), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = (req as AuthenticatedRequest).user;
     const pg = parsePagination(req.query as Record<string, unknown>);
@@ -41,8 +41,8 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
   } catch (err) { next(err); }
 });
 
-// POST / - Create payment
-router.post('/', requireAuth, validateBody(createPaymentSchema),
+// POST / - Create payment (admin/PM staff only)
+router.post('/', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF), validateBody(createPaymentSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;
@@ -138,6 +138,16 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     const user = (req as AuthenticatedRequest).user;
     const row = await queryOne(`SELECT * FROM payments WHERE id = $1 AND organization_id = $2`, [req.params.id, user.orgId]);
     if (!row) throw new NotFoundError('Payment not found');
+
+    // TENANT must own the payment (via tenant_profiles → lease_id)
+    if (user.role === UserRole.TENANT) {
+      const ownership = await queryOne(
+        `SELECT user_id FROM tenant_profiles WHERE user_id = $1 AND lease_id = $2`,
+        [user.userId, (row as any).lease_id],
+      );
+      if (!ownership) throw new NotFoundError('Payment not found');
+    }
+
     res.json({ data: row });
   } catch (err) { next(err); }
 });
