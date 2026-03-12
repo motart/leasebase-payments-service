@@ -41,8 +41,8 @@ router.get('/', requireAuth, requireRole(UserRole.OWNER), async (req: Request, r
   } catch (err) { next(err); }
 });
 
-// POST / - Create payment (admin/PM staff only)
-router.post('/', requireAuth, requireRole(UserRole.ORG_ADMIN, UserRole.PM_STAFF), validateBody(createPaymentSchema),
+// POST / - Create payment (OWNER only)
+router.post('/', requireAuth, requireRole(UserRole.OWNER), validateBody(createPaymentSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const user = (req as AuthenticatedRequest).user;

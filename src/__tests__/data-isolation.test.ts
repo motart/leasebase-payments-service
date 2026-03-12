@@ -75,18 +75,14 @@ describe('Data Isolation — payments-service', () => {
     });
   });
 
-  // ── P2: POST / requires role (blocks TENANT and OWNER) ──
+  // ── P2: POST / requires OWNER role ──
   describe('P2: POST / role guard', () => {
     it('returns 403 for TENANT', async () => {
       activeUser.current = user({ role: 'TENANT' });
       expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(403);
     });
-    it('returns 403 for OWNER', async () => {
+    it('returns 201 for OWNER', async () => {
       activeUser.current = user({ role: 'OWNER' });
-      expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(403);
-    });
-    it('returns 201 for PM_STAFF', async () => {
-      activeUser.current = user({ role: 'PM_STAFF' });
       mockQueryOne.mockResolvedValueOnce({ id: 'pay-1', status: 'PENDING' });
       expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(201);
     });
@@ -108,7 +104,7 @@ describe('Data Isolation — payments-service', () => {
         .mockResolvedValueOnce(null); // ownership fails
       expect((await req(port, 'GET', '/p/pay-1')).status).toBe(404);
     });
-    it('returns 200 for ORG_ADMIN without ownership check', async () => {
+    it('returns 200 for OWNER without ownership check', async () => {
       activeUser.current = user({ role: 'OWNER' });
       mockQueryOne.mockResolvedValueOnce({ id: 'pay-1', organization_id: 'org-1', lease_id: 'lease-1' });
       expect((await req(port, 'GET', '/p/pay-1')).status).toBe(200);
