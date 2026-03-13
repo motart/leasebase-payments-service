@@ -5,7 +5,9 @@ import {
   query, queryOne, NotFoundError,
   parsePagination, paginationMeta,
   type AuthenticatedRequest, UserRole,
+  logger,
 } from '@leasebase/service-common';
+import { getStripe, isStripeConfigured } from '../stripe/client';
 
 const router = Router();
 
@@ -15,6 +17,11 @@ const createPaymentSchema = z.object({
   currency: z.string().default('usd'),
   method: z.string().optional(),
   ledgerEntryId: z.string().optional(),
+});
+
+const checkoutSchema = z.object({
+  returnUrl: z.string().url(),
+  cancelUrl: z.string().url(),
 });
 
 const createLedgerSchema = z.object({
@@ -93,6 +100,105 @@ router.get('/mine', requireAuth, async (req: Request, res: Response, next: NextF
     res.json({ data: rows, meta: paginationMeta(Number(countResult?.count || 0), pg) });
   } catch (err) { next(err); }
 });
+
+// ── POST /checkout — Stripe Checkout Session for tenant rent payment ─────────
+
+router.post(
+  '/checkout',
+  requireAuth,
+  requireRole(UserRole.TENANT),
+  validateBody(checkoutSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!isStripeConfigured()) {
+        return res.status(503).json({
+          error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+        });
+      }
+
+      const user = (req as AuthenticatedRequest).user;
+      const { returnUrl, cancelUrl } = req.body;
+
+      // 1. Resolve tenant's active lease via tenant_profiles → lease_service.leases
+      const lease = await queryOne<{
+        lease_id: string;
+        monthly_rent: number;
+        org_id: string;
+      }>(
+        `SELECT l.id AS lease_id, l.monthly_rent, l.org_id
+         FROM lease_service.leases l
+         JOIN tenant_profiles tp ON tp.lease_id = l.id
+         WHERE tp.user_id = $1 AND l.org_id = $2 AND l.status = 'ACTIVE'`,
+        [user.userId, user.orgId],
+      );
+
+      if (!lease) {
+        throw new NotFoundError('No active lease found');
+      }
+
+      // 2. Get org's connected Stripe account
+      const account = await queryOne<{ stripe_account_id: string }>(
+        `SELECT stripe_account_id FROM payment_account WHERE org_id = $1 AND status = 'ACTIVE'`,
+        [user.orgId],
+      );
+
+      if (!account) {
+        return res.status(422).json({
+          error: { code: 'NO_PAYMENT_ACCOUNT', message: 'Property manager has not set up payments' },
+        });
+      }
+
+      // 3. Create Stripe Checkout Session via Connect (destination charge)
+      const stripe = getStripe();
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: { name: 'Monthly Rent' },
+              unit_amount: lease.monthly_rent,
+            },
+            quantity: 1,
+          },
+        ],
+        payment_intent_data: {
+          application_fee_amount: Math.round(lease.monthly_rent * 0.01),
+          transfer_data: { destination: account.stripe_account_id },
+        },
+        success_url: returnUrl,
+        cancel_url: cancelUrl,
+        client_reference_id: lease.lease_id,
+        metadata: {
+          lease_id: lease.lease_id,
+          tenant_user_id: user.userId,
+          org_id: user.orgId,
+        },
+      });
+
+      // 4. Record PENDING payment
+      await queryOne(
+        `INSERT INTO payments (organization_id, lease_id, amount, currency, method, status)
+         VALUES ($1, $2, $3, 'usd', 'stripe_checkout', 'PENDING')`,
+        [user.orgId, lease.lease_id, lease.monthly_rent],
+      );
+
+      logger.info(
+        { leaseId: lease.lease_id, sessionId: session.id, amount: lease.monthly_rent },
+        'Stripe Checkout Session created for tenant rent payment',
+      );
+
+      res.status(201).json({
+        data: {
+          checkoutUrl: session.url,
+          sessionId: session.id,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // ── Ledger routes (MUST be above /:id to prevent Express param shadowing) ───
 
