@@ -28,6 +28,7 @@ vi.mock('../stripe/client', () => ({
     checkout: { sessions: { create: mockStripeCreate } },
   }),
   isStripeConfigured: () => mockIsStripeConfigured(),
+  getPublishableKey: () => 'pk_test_xxx',
 }));
 
 import express from 'express';
@@ -85,13 +86,15 @@ describe('POST /checkout', () => {
   it('creates a checkout session for authenticated tenant with active lease', async () => {
     activeUser.current = tenant();
 
-    // 1st queryOne: lease lookup
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' })
-      // 2nd queryOne: payment_account lookup
-      .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123' })
-      // 3rd queryOne: INSERT payment
-      .mockResolvedValueOnce({ id: 'pay-new' });
+      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // getActiveLeaseForTenant
+      .mockResolvedValueOnce(null) // find charge by idempotency_key (not found)
+      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // INSERT charge
+      .mockResolvedValueOnce(undefined) // insertAuditLog for charge
+      .mockResolvedValueOnce(null) // existing transaction check
+      .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123', default_fee_percent: 100 }) // payment_account
+      .mockResolvedValueOnce({ id: 'txn-1' }) // INSERT payment_transaction
+      .mockResolvedValueOnce(undefined); // insertAuditLog for txn
 
     mockStripeCreate.mockResolvedValueOnce({
       id: 'cs_test_session',
@@ -110,8 +113,11 @@ describe('POST /checkout', () => {
 
     mockQueryOne
       .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' })
-      .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123' })
-      .mockResolvedValueOnce({ id: 'pay-new' });
+      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // found existing charge
+      .mockResolvedValueOnce(null) // no existing txn
+      .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123', default_fee_percent: 100 })
+      .mockResolvedValueOnce({ id: 'txn-1' })
+      .mockResolvedValueOnce(undefined);
 
     mockStripeCreate.mockResolvedValueOnce({ id: 'cs_test', url: 'https://checkout.stripe.com/x' });
 
@@ -129,8 +135,11 @@ describe('POST /checkout', () => {
 
     mockQueryOne
       .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 200000, org_id: 'org-1' })
-      .mockResolvedValueOnce({ stripe_account_id: 'acct_xyz789' })
-      .mockResolvedValueOnce({ id: 'pay-new' });
+      .mockResolvedValueOnce({ id: 'c-1', amount: 200000, status: 'PENDING' }) // found existing charge
+      .mockResolvedValueOnce(null) // no existing txn
+      .mockResolvedValueOnce({ stripe_account_id: 'acct_xyz789', default_fee_percent: 100 })
+      .mockResolvedValueOnce({ id: 'txn-1' })
+      .mockResolvedValueOnce(undefined);
 
     mockStripeCreate.mockResolvedValueOnce({ id: 'cs_test', url: 'https://checkout.stripe.com/x' });
 
@@ -158,7 +167,9 @@ describe('POST /checkout', () => {
   it('returns 422 when org has no active payment account', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' })
+      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // lease
+      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge exists
+      .mockResolvedValueOnce(null) // no existing txn
       .mockResolvedValueOnce(null); // no payment_account
 
     const res = await req(port, 'POST', '/p/checkout', validBody);

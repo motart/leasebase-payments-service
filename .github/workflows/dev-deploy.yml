@@ -36,6 +36,22 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+
+      # ── Dependency version gate ───────────────────────────────────────────
+      - name: Check @leasebase/service-common version
+        run: |
+          RESOLVED=$(npm ls @leasebase/service-common --json 2>/dev/null | jq -r '.dependencies["@leasebase/service-common"].version // empty')
+          REQUIRED="2.0.5"
+          if [ -z "$RESOLVED" ]; then
+            echo "::error::Could not resolve @leasebase/service-common version"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$REQUIRED" "$RESOLVED" | sort -V | head -n1)" != "$REQUIRED" ]; then
+            echo "::error::@leasebase/service-common $RESOLVED < required $REQUIRED"
+            exit 1
+          fi
+          echo "✓ @leasebase/service-common $RESOLVED >= $REQUIRED"
+
       - name: Lint
         run: npm run lint
 
