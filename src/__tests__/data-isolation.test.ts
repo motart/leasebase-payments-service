@@ -75,16 +75,18 @@ describe('Data Isolation — payments-service', () => {
     });
   });
 
-  // ── P2: POST / requires OWNER role ──
-  describe('P2: POST / role guard', () => {
+  // ── P2: POST /charges requires OWNER role ──
+  describe('P2: POST /charges role guard', () => {
     it('returns 403 for TENANT', async () => {
       activeUser.current = user({ role: 'TENANT' });
-      expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(403);
+      expect((await req(port, 'POST', '/p/charges', { leaseId: 'l1', amount: 1000, dueDate: '2026-04-01' })).status).toBe(403);
     });
     it('returns 201 for OWNER', async () => {
       activeUser.current = user({ role: 'OWNER' });
-      mockQueryOne.mockResolvedValueOnce({ id: 'pay-1', status: 'PENDING' });
-      expect((await req(port, 'POST', '/p/', { leaseId: 'l1', amount: 1000 })).status).toBe(201);
+      mockQueryOne
+        .mockResolvedValueOnce({ id: 'c-1', status: 'PENDING' }) // INSERT charge
+        .mockResolvedValueOnce(undefined); // insertAuditLog
+      expect((await req(port, 'POST', '/p/charges', { leaseId: 'l1', amount: 1000, dueDate: '2026-04-01' })).status).toBe(201);
     });
   });
 

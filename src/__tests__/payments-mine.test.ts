@@ -61,10 +61,14 @@ beforeEach(() => { mockQuery.mockReset(); mockQueryOne.mockReset(); });
 describe('GET /mine', () => {
   it('returns paginated payments for authenticated tenant', async () => {
     activeUser.current = user();
-    mockQuery.mockResolvedValueOnce([
-      { id: 'pay-1', organization_id: 'org-1', lease_id: 'l-1', amount: 150000, currency: 'usd', method: 'card', status: 'SUCCEEDED', ledger_entry_id: null, created_at: '2024-06-01', updated_at: '2024-06-01' },
-      { id: 'pay-2', organization_id: 'org-1', lease_id: 'l-1', amount: 150000, currency: 'usd', method: 'card', status: 'PENDING', ledger_entry_id: null, created_at: '2024-07-01', updated_at: '2024-07-01' },
-    ]);
+    // 1st query: getTenantLeaseLinks
+    mockQuery
+      .mockResolvedValueOnce([{ user_id: 'u1', lease_id: 'l-1', org_id: 'org-1' }])
+      // 2nd query: payment_transaction SELECT
+      .mockResolvedValueOnce([
+        { id: 'pay-1', organization_id: 'org-1', lease_id: 'l-1', amount: 150000, currency: 'usd', method: 'card', status: 'SUCCEEDED', created_at: '2024-06-01', updated_at: '2024-06-01' },
+        { id: 'pay-2', organization_id: 'org-1', lease_id: 'l-1', amount: 150000, currency: 'usd', method: 'card', status: 'PENDING', created_at: '2024-07-01', updated_at: '2024-07-01' },
+      ]);
     mockQueryOne.mockResolvedValueOnce({ count: '2' });
 
     const res = await req(port, 'GET', '/p/mine');
@@ -73,10 +77,9 @@ describe('GET /mine', () => {
     expect(res.body.meta.total).toBe(2);
   });
 
-  it('returns empty list when tenant has no payments', async () => {
+  it('returns empty list when tenant has no lease links', async () => {
     activeUser.current = user();
-    mockQuery.mockResolvedValueOnce([]);
-    mockQueryOne.mockResolvedValueOnce({ count: '0' });
+    mockQuery.mockResolvedValueOnce([]); // no tenant_profiles rows
 
     const res = await req(port, 'GET', '/p/mine');
     expect(res.status).toBe(200);
@@ -84,15 +87,17 @@ describe('GET /mine', () => {
     expect(res.body.meta.total).toBe(0);
   });
 
-  it('scopes by user_id and organizationId', async () => {
+  it('scopes by user_id and organizationId via tenant_profiles', async () => {
     activeUser.current = user({ userId: 'u-42', orgId: 'org-7' });
-    mockQuery.mockResolvedValueOnce([]);
+    mockQuery
+      .mockResolvedValueOnce([{ user_id: 'u-42', lease_id: 'l-1', org_id: 'org-7' }])
+      .mockResolvedValueOnce([]);
     mockQueryOne.mockResolvedValueOnce({ count: '0' });
 
     await req(port, 'GET', '/p/mine');
+    // First query call is getTenantLeaseLinks which queries tenant_profiles
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).toContain('tenant_profiles');
-    expect(sql).toContain('tp.user_id');
     const params = mockQuery.mock.calls[0][1] as any[];
     expect(params[0]).toBe('u-42');
     expect(params[1]).toBe('org-7');
