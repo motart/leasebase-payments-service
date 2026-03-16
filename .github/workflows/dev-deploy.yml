@@ -85,4 +85,4 @@ jobs:
       - name: Deploy to ECS Dev
         run: bash scripts/deploy_ecs.sh
         env:
-          IMAGE: ${{ steps.build.outputs.image }}
+          IMAGE: ${{ steps.build.outputs.image_sha }}
