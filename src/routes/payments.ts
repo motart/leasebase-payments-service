@@ -44,9 +44,11 @@ router.get('/', requireAuth, requireRole(UserRole.OWNER), async (req: Request, r
         `SELECT pt.*, c.billing_period, c.type AS charge_type, c.due_date AS charge_due_date
          FROM payment_transaction pt
          LEFT JOIN charge c ON pt.charge_id = c.id
-         WHERE pt.organization_id = $1
+         WHERE pt.organization_id = $1${req.query.source ? ' AND pt.source = $4' : ''}
          ORDER BY pt.created_at DESC LIMIT $2 OFFSET $3`,
-        [user.orgId, pg.limit, offset],
+        req.query.source
+          ? [user.orgId, pg.limit, offset, req.query.source]
+          : [user.orgId, pg.limit, offset],
       ),
       queryOne<{ count: string }>(
         `SELECT COUNT(*) as count FROM payment_transaction WHERE organization_id = $1`,

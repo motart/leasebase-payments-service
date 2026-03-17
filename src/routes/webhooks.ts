@@ -15,6 +15,11 @@ import { getLeaseDetails } from '../data/lease-queries';
 import { getTenantEmail } from '../data/tenant-queries';
 import { insertAuditLog } from '../lib/audit';
 import { sendReceiptEmail } from '../lib/email';
+import {
+  sendAutopaySuccessEmail,
+  sendAutopayFailureEmail,
+  sendRetryExhaustedEmail,
+} from '../lib/notifications';
 
 const router = Router();
 
@@ -71,6 +76,15 @@ async function handlePlatformEvent(event: Stripe.Event): Promise<void> {
     case 'payment_intent.processing':
       await handlePaymentIntentProcessing(event);
       break;
+    case 'setup_intent.succeeded':
+      await handleSetupIntentSucceeded(event);
+      break;
+    case 'setup_intent.setup_failed':
+      await handleSetupIntentFailed(event);
+      break;
+    case 'payment_method.detached':
+      await handlePaymentMethodDetached(event);
+      break;
     case 'charge.dispute.created':
       await handleDisputeCreated(event);
       break;
@@ -122,8 +136,9 @@ async function handlePaymentIntentSucceeded(event: Stripe.Event): Promise<void> 
     amount: number;
     currency: string;
     status: string;
+    source: string;
   }>(
-    `SELECT id, charge_id, organization_id, lease_id, tenant_user_id, amount, currency, status
+    `SELECT id, charge_id, organization_id, lease_id, tenant_user_id, amount, currency, status, source
      FROM payment_transaction
      WHERE stripe_payment_intent_id = $1`,
     [paymentIntent.id],
@@ -285,7 +300,29 @@ async function handlePaymentIntentSucceeded(event: Stripe.Event): Promise<void> 
     }
   }
 
-  // 2. TODO: Publish PaymentSucceeded event to EventBridge
+  // 2. Autopay-specific: send autopay success email + update attempt_log
+  if (txn.source === 'AUTOPAY' && receiptData && txn.tenant_user_id) {
+    const tenantEmail = await getTenantEmail(txn.tenant_user_id);
+    if (tenantEmail) {
+      await sendAutopaySuccessEmail({
+        toEmail: tenantEmail,
+        amount: txn.amount,
+        currency: txn.currency,
+        receiptNumber: receiptData.receipt_number,
+        billingPeriod: null,
+      });
+    }
+
+    // Mark the latest attempt_log as SUCCEEDED
+    await queryOne(
+      `UPDATE autopay_attempt_log SET status = 'SUCCEEDED'
+       WHERE charge_id = $1 AND status = 'PENDING'
+       ORDER BY created_at DESC LIMIT 1`,
+      [txn.charge_id],
+    ).catch((err) => logger.warn({ err, chargeId: txn.charge_id }, 'Failed to update autopay attempt_log'));
+  }
+
+  // 3. TODO: Publish PaymentSucceeded event to EventBridge
   //    (notification-service will consume → send "payment received" push to owner)
 }
 
@@ -297,8 +334,12 @@ async function handlePaymentIntentFailed(event: Stripe.Event): Promise<void> {
 
   logger.info({ piId: paymentIntent.id, failureCode: lastError?.code }, 'PaymentIntent failed');
 
-  const txn = await queryOne<{ id: string; organization_id: string; status: string }>(
-    `SELECT id, organization_id, status FROM payment_transaction WHERE stripe_payment_intent_id = $1`,
+  const txn = await queryOne<{
+    id: string; organization_id: string; status: string;
+    source: string; charge_id: string | null; autopay_retry_count: number;
+  }>(
+    `SELECT id, organization_id, status, source, charge_id, autopay_retry_count
+     FROM payment_transaction WHERE stripe_payment_intent_id = $1`,
     [paymentIntent.id],
   );
 
@@ -331,7 +372,16 @@ async function handlePaymentIntentFailed(event: Stripe.Event): Promise<void> {
     actorId: event.id,
   });
 
-  // TODO: Publish PaymentFailed event to EventBridge
+  // Autopay-specific side effects: record retry tracking
+  if (txn.source === 'AUTOPAY') {
+    await handleAutopayFailureSideEffects(
+      txn.id,
+      txn.organization_id,
+      txn.charge_id,
+      txn.autopay_retry_count,
+      lastError?.code ?? null,
+    );
+  }
 }
 
 // ── Payment Processing (ACH) ────────────────────────────────────────────────
@@ -370,6 +420,196 @@ async function handlePaymentIntentProcessing(event: Stripe.Event): Promise<void>
     actorType: 'WEBHOOK',
     actorId: event.id,
   });
+}
+
+// ── Setup Intent Handlers (Phase 1B) ─────────────────────────────────────────
+
+async function handleSetupIntentSucceeded(event: Stripe.Event): Promise<void> {
+  const setupIntent = event.data.object as Stripe.SetupIntent;
+  const pmId = typeof setupIntent.payment_method === 'string'
+    ? setupIntent.payment_method
+    : (setupIntent.payment_method as any)?.id;
+
+  logger.info({ setupIntentId: setupIntent.id, pmId }, 'SetupIntent succeeded (webhook)');
+
+  if (!pmId) {
+    logger.warn({ setupIntentId: setupIntent.id }, 'SetupIntent succeeded but no payment_method attached');
+    return;
+  }
+
+  // Check if we already have this PM locally
+  const existing = await queryOne<{ id: string }>(
+    `SELECT id FROM payment_method WHERE stripe_payment_method_id = $1`,
+    [pmId],
+  );
+  if (existing) {
+    // Already persisted (via /setup-intent/complete or previous webhook)
+    logger.info({ pmId }, 'PaymentMethod already exists locally — skipping webhook upsert');
+    return;
+  }
+
+  // Fetch the full PaymentMethod from Stripe to get card details
+  const stripe = getStripe();
+  let pm: Stripe.PaymentMethod;
+  try {
+    pm = await stripe.paymentMethods.retrieve(pmId);
+  } catch (err) {
+    logger.error({ err, pmId }, 'Failed to retrieve PaymentMethod from Stripe during webhook');
+    return;
+  }
+
+  const card = pm.card;
+  const customerId = typeof setupIntent.customer === 'string'
+    ? setupIntent.customer
+    : (setupIntent.customer as any)?.id ?? null;
+  const userId = setupIntent.metadata?.leasebase_user_id;
+  const orgId = setupIntent.metadata?.leasebase_org_id;
+
+  if (!userId || !orgId) {
+    logger.warn({ setupIntentId: setupIntent.id }, 'SetupIntent missing leasebase metadata — cannot persist PM');
+    return;
+  }
+
+  // Check if this is the first method for the user
+  const countResult = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) as count FROM payment_method
+     WHERE user_id = $1 AND organization_id = $2 AND status = 'ACTIVE'`,
+    [userId, orgId],
+  );
+  const isFirst = Number(countResult?.count || 0) === 0;
+
+  await queryOne(
+    `INSERT INTO payment_method
+       (organization_id, user_id, stripe_payment_method_id, stripe_customer_id,
+        stripe_setup_intent_id, type, last4, brand, exp_month, exp_year,
+        fingerprint, is_default, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ACTIVE')
+     ON CONFLICT (stripe_payment_method_id) DO NOTHING`,
+    [
+      orgId, userId, pm.id, customerId, setupIntent.id,
+      pm.type, card?.last4 ?? null, card?.brand ?? null,
+      card?.exp_month ?? null, card?.exp_year ?? null,
+      card?.fingerprint ?? null, isFirst,
+    ],
+  );
+
+  logger.info({ pmId: pm.id, userId, orgId, isDefault: isFirst }, 'PaymentMethod persisted via webhook');
+}
+
+async function handleSetupIntentFailed(event: Stripe.Event): Promise<void> {
+  const setupIntent = event.data.object as Stripe.SetupIntent;
+  const lastError = setupIntent.last_setup_error;
+  logger.info(
+    { setupIntentId: setupIntent.id, failureCode: lastError?.code },
+    'SetupIntent setup failed',
+  );
+
+  // If we had a payment_method row pending for this setup intent, mark it failed
+  const pm = await queryOne<{ id: string }>(
+    `SELECT id FROM payment_method WHERE stripe_setup_intent_id = $1 AND status = 'ACTIVE'`,
+    [setupIntent.id],
+  );
+  if (pm) {
+    await queryOne(
+      `UPDATE payment_method
+       SET status = 'FAILED', status_reason = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [lastError?.message ?? 'Setup failed', pm.id],
+    );
+  }
+}
+
+async function handlePaymentMethodDetached(event: Stripe.Event): Promise<void> {
+  const pmObject = event.data.object as Stripe.PaymentMethod;
+  logger.info({ pmId: pmObject.id }, 'PaymentMethod detached externally');
+
+  // Mark as DETACHED locally if we have it
+  await queryOne(
+    `UPDATE payment_method
+     SET status = 'DETACHED', is_default = false, detached_at = NOW(), updated_at = NOW()
+     WHERE stripe_payment_method_id = $1 AND status = 'ACTIVE'`,
+    [pmObject.id],
+  );
+}
+
+// ── Autopay-aware failure handling ───────────────────────────────────────────
+// (extends handlePaymentIntentFailed — autopay notification side effect)
+
+async function handleAutopayFailureSideEffects(
+  txnId: string,
+  orgId: string,
+  chargeId: string | null,
+  retryCount: number,
+  failureCode: string | null,
+): Promise<void> {
+  try {
+    // Record autopay attempt log
+    const attemptNumber = retryCount + 1;
+    const maxRetries = 3;
+    const nextRetryAt = attemptNumber < maxRetries
+      ? getNextRetryDate(attemptNumber)
+      : null;
+
+    await queryOne(
+      `INSERT INTO autopay_attempt_log
+         (organization_id, charge_id, payment_transaction_id, attempt_number, status, failure_reason, next_retry_at)
+       VALUES ($1, $2, $3, $4, 'FAILED', $5, $6)`,
+      [orgId, chargeId, txnId, attemptNumber, failureCode, nextRetryAt],
+    );
+
+    logger.info(
+      { txnId, attemptNumber, nextRetryAt, maxRetries },
+      'Autopay failure recorded in attempt log',
+    );
+
+    // Send failure/exhausted email to tenant
+    if (chargeId) {
+      const txnRow = await queryOne<{
+        tenant_user_id: string | null;
+        amount: number;
+        currency: string;
+      }>(
+        `SELECT tenant_user_id, amount, currency FROM payment_transaction WHERE id = $1`,
+        [txnId],
+      );
+
+      if (txnRow?.tenant_user_id) {
+        const tenantEmail = await getTenantEmail(txnRow.tenant_user_id);
+        if (tenantEmail) {
+          if (attemptNumber >= maxRetries) {
+            // Final retry exhausted
+            await sendRetryExhaustedEmail({
+              toEmail: tenantEmail,
+              amount: txnRow.amount,
+              currency: txnRow.currency,
+            });
+          } else {
+            // More retries remain
+            await sendAutopayFailureEmail({
+              toEmail: tenantEmail,
+              amount: txnRow.amount,
+              currency: txnRow.currency,
+              failureReason: failureCode,
+              retryNumber: attemptNumber,
+              maxRetries,
+              nextRetryDate: nextRetryAt,
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.error({ err, txnId }, 'Failed to record autopay failure side effects');
+  }
+}
+
+function getNextRetryDate(attemptNumber: number): string | null {
+  const delayDays = [1, 3, 5]; // retry 1: +1d, retry 2: +3d, retry 3: +5d
+  const delay = delayDays[attemptNumber - 1];
+  if (delay === undefined) return null;
+  const next = new Date();
+  next.setDate(next.getDate() + delay);
+  return next.toISOString();
 }
 
 // ── Dispute / Refund stubs (Phase 2) ─────────────────────────────────────────
@@ -473,7 +713,16 @@ router.post('/stripe', async (req: Request, res: Response, _next: NextFunction) 
   let event: Stripe.Event;
   try {
     const secrets = getWebhookSecrets();
-    event = verifyAndParse(req.body as Buffer, signature, secrets.platform);
+    // Use rawBody captured by the verify callback in express.json().
+    const rawBody = (req as any).rawBody;
+    logger.info({
+      hasRawBody: rawBody !== undefined,
+      rawBodyType: typeof rawBody,
+      isBuffer: Buffer.isBuffer(rawBody),
+      bodyType: typeof req.body,
+    }, 'Webhook raw body diagnostic');
+    const payload = Buffer.isBuffer(rawBody) ? rawBody : (typeof rawBody === 'string' ? rawBody : JSON.stringify(req.body));
+    event = verifyAndParse(payload as Buffer, signature, secrets.platform);
   } catch (err) {
     logger.error({ err }, 'Webhook signature verification failed');
     return res.status(401).json({ error: 'Signature verification failed' });
@@ -514,7 +763,8 @@ router.post('/stripe-connect', async (req: Request, res: Response, _next: NextFu
   let event: Stripe.Event;
   try {
     const secrets = getWebhookSecrets();
-    event = verifyAndParse(req.body as Buffer, signature, secrets.connect);
+    const rawBody = (req as any).rawBody as Buffer;
+    event = verifyAndParse(rawBody, signature, secrets.connect);
   } catch (err) {
     logger.error({ err }, 'Connect webhook signature verification failed');
     return res.status(401).json({ error: 'Signature verification failed' });
