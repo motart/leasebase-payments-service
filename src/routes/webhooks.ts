@@ -788,3 +788,4 @@ router.post('/stripe-connect', async (req: Request, res: Response, _next: NextFu
 });
 
 export { router as webhooksRouter };
+export { handlePlatformEvent as handlePlatformEventReplay };

@@ -6,6 +6,7 @@ import { receiptsRouter } from './routes/receipts';
 import { jobsRouter } from './routes/jobs';
 import { paymentMethodsRouter } from './routes/payment-methods';
 import { autopayRouter } from './routes/autopay';
+import { adminRouter } from './routes/admin';
 import { initStripe } from './stripe/client';
 
 // Initialize Stripe client from secrets/env
@@ -26,5 +27,6 @@ app.use('/internal/payments/connect', connectRouter);
 app.use('/internal/payments/jobs', jobsRouter);
 app.use('/internal/payments', receiptsRouter);
 app.use('/internal/payments', paymentsRouter);
+app.use('/internal/payments/admin', adminRouter);
 
 startApp(app);
