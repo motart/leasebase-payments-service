@@ -67,8 +67,8 @@ export async function getActiveLeasesForChargeGeneration(
        u.unit_number
      FROM lease_service.leases l
      LEFT JOIN tenant_profiles tp ON tp.lease_id = l.id
-     LEFT JOIN property_service.properties p ON l.property_id = p.id
-     LEFT JOIN property_service.units u ON l.unit_id = u.id
+     LEFT JOIN property_service.properties p ON l.property_id::text = p.id::text
+     LEFT JOIN property_service.units u ON l.unit_id::text = u.id::text
      WHERE l.status = 'ACTIVE'
        AND l.start_date <= $1::date
        AND (l.end_date IS NULL OR l.end_date >= $1::date)`,
@@ -87,8 +87,8 @@ export async function getLeaseDetails(
        p.name AS property_name,
        u.unit_number
      FROM lease_service.leases l
-     LEFT JOIN property_service.properties p ON l.property_id = p.id
-     LEFT JOIN property_service.units u ON l.unit_id = u.id
+     LEFT JOIN property_service.properties p ON l.property_id::text = p.id::text
+     LEFT JOIN property_service.units u ON l.unit_id::text = u.id::text
      WHERE l.id = $1`,
     [leaseId],
   );
