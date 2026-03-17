@@ -68,14 +68,18 @@ export async function sendAutopaySuccessEmail(params: {
 
   const html = `
 <!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <h2 style="color: #1e293b;">Autopay Payment Received</h2>
-  <p>Your autopay payment of <strong>${amount}</strong> has been successfully processed.</p>
-  <p>Receipt #: <strong>${params.receiptNumber}</strong></p>
-  ${params.billingPeriod ? `<p>Billing Period: ${params.billingPeriod}</p>` : ''}
-  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-  <p style="color: #64748b; font-size: 13px;">This is an automated payment from your enrolled autopay. No action is needed.</p>
-  <p style="color: #94a3b8; font-size: 12px;">— LeaseBase</p>
+<body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #F8FAFC;">
+  <div style="height: 4px; background: linear-gradient(90deg, #18D7F0 0%, #5EEA7A 60%, #D9FF1F 100%);"></div>
+  <div style="padding: 32px 24px;">
+    <div style="margin-bottom: 24px;"><span style="font-weight: 700; font-size: 18px; color: #0F172A; letter-spacing: 0.5px;">LeaseBase</span></div>
+    <h2 style="color: #0F172A; margin: 0 0 16px;">Autopay Payment Received</h2>
+    <p style="color: #334155;">Your autopay payment of <strong>${amount}</strong> has been successfully processed.</p>
+    <p style="color: #334155;">Receipt #: <strong>${params.receiptNumber}</strong></p>
+    ${params.billingPeriod ? `<p style="color: #334155;">Billing Period: ${params.billingPeriod}</p>` : ''}
+    <hr style="border: none; border-top: 1px solid #E2E8F0; margin: 24px 0;" />
+    <p style="color: #64748b; font-size: 13px;">This is an automated payment from your enrolled autopay. No action is needed.</p>
+    <p style="color: #94a3b8; font-size: 12px;">— LeaseBase · Property Performance Platform</p>
+  </div>
 </body></html>`.trim();
 
   const text = [
@@ -111,15 +115,19 @@ export async function sendAutopayFailureEmail(params: {
 
   const html = `
 <!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <h2 style="color: #dc2626;">Autopay Payment Failed</h2>
-  <p>Your autopay payment of <strong>${amount}</strong> could not be processed.</p>
-  ${params.failureReason ? `<p>Reason: ${params.failureReason}</p>` : ''}
-  ${retryInfo ? `<p>${retryInfo}</p>` : ''}
-  <p>You can also make a manual payment at any time through your tenant portal.</p>
-  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-  <p style="color: #64748b; font-size: 13px;">If you believe this is an error, please check your payment method or contact your property manager.</p>
-  <p style="color: #94a3b8; font-size: 12px;">— LeaseBase</p>
+<body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #F8FAFC;">
+  <div style="height: 4px; background: linear-gradient(90deg, #18D7F0 0%, #5EEA7A 60%, #D9FF1F 100%);"></div>
+  <div style="padding: 32px 24px;">
+    <div style="margin-bottom: 24px;"><span style="font-weight: 700; font-size: 18px; color: #0F172A; letter-spacing: 0.5px;">LeaseBase</span></div>
+    <h2 style="color: #dc2626; margin: 0 0 16px;">Autopay Payment Failed</h2>
+    <p style="color: #334155;">Your autopay payment of <strong>${amount}</strong> could not be processed.</p>
+    ${params.failureReason ? `<p style="color: #334155;">Reason: ${params.failureReason}</p>` : ''}
+    ${retryInfo ? `<p style="color: #334155;">${retryInfo}</p>` : ''}
+    <p style="color: #334155;">You can also make a manual payment at any time through your tenant portal.</p>
+    <hr style="border: none; border-top: 1px solid #E2E8F0; margin: 24px 0;" />
+    <p style="color: #64748b; font-size: 13px;">If you believe this is an error, please check your payment method or contact your property manager.</p>
+    <p style="color: #94a3b8; font-size: 12px;">— LeaseBase · Property Performance Platform</p>
+  </div>
 </body></html>`.trim();
 
   const text = [
@@ -147,14 +155,18 @@ export async function sendRetryExhaustedEmail(params: {
 
   const html = `
 <!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <h2 style="color: #dc2626;">Autopay Attempts Exhausted</h2>
-  <p>After multiple attempts, we were unable to process your autopay payment of <strong>${amount}</strong>.</p>
-  <p><strong>Please make a manual payment through your tenant portal as soon as possible to avoid late fees.</strong></p>
-  <p>You may also want to check or update your saved payment method.</p>
-  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-  <p style="color: #64748b; font-size: 13px;">Contact your property manager if you need assistance.</p>
-  <p style="color: #94a3b8; font-size: 12px;">— LeaseBase</p>
+<body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #F8FAFC;">
+  <div style="height: 4px; background: linear-gradient(90deg, #18D7F0 0%, #5EEA7A 60%, #D9FF1F 100%);"></div>
+  <div style="padding: 32px 24px;">
+    <div style="margin-bottom: 24px;"><span style="font-weight: 700; font-size: 18px; color: #0F172A; letter-spacing: 0.5px;">LeaseBase</span></div>
+    <h2 style="color: #dc2626; margin: 0 0 16px;">Autopay Attempts Exhausted</h2>
+    <p style="color: #334155;">After multiple attempts, we were unable to process your autopay payment of <strong>${amount}</strong>.</p>
+    <p style="color: #334155;"><strong>Please make a manual payment through your tenant portal as soon as possible to avoid late fees.</strong></p>
+    <p style="color: #334155;">You may also want to check or update your saved payment method.</p>
+    <hr style="border: none; border-top: 1px solid #E2E8F0; margin: 24px 0;" />
+    <p style="color: #64748b; font-size: 13px;">Contact your property manager if you need assistance.</p>
+    <p style="color: #94a3b8; font-size: 12px;">— LeaseBase · Property Performance Platform</p>
+  </div>
 </body></html>`.trim();
 
   const text = [
