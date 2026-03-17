@@ -47,19 +47,25 @@ function buildReceiptHtml(params: ReceiptEmailParams): string {
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <h2 style="color: #1e293b;">Payment Receipt</h2>
-  <p>Your payment of <strong>${amount}</strong> has been received.</p>
-  <p>Receipt #: <strong>${params.receiptNumber}</strong></p>
-  ${propertyLine}
-  ${periodLine}
-  ${methodLine}
-  <p>Date: ${new Date(params.paidAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
-  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-  <p style="color: #64748b; font-size: 13px;">
-    This is an automated receipt from LeaseBase. Please keep this for your records.
-  </p>
-  <p style="color: #94a3b8; font-size: 12px;">— LeaseBase</p>
+<body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #F8FAFC;">
+  <div style="height: 4px; background-color: #18D7F0; background: linear-gradient(90deg, #18D7F0 0%, #5EEA7A 60%, #D9FF1F 100%);"></div>
+  <div style="padding: 32px 24px;">
+    <div style="margin-bottom: 24px;">
+      <span style="font-weight: 700; font-size: 18px; color: #0F172A; letter-spacing: 0.5px;">LeaseBase</span>
+    </div>
+    <h2 style="color: #0F172A; margin: 0 0 16px;">Payment Receipt</h2>
+    <p style="color: #334155;">Your payment of <strong>${amount}</strong> has been received.</p>
+    <p style="color: #334155;">Receipt #: <strong>${params.receiptNumber}</strong></p>
+    ${propertyLine}
+    ${periodLine}
+    ${methodLine}
+    <p style="color: #334155;">Date: ${new Date(params.paidAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+    <hr style="border: none; border-top: 1px solid #E2E8F0; margin: 24px 0;" />
+    <p style="color: #64748b; font-size: 13px;">
+      This is an automated receipt from LeaseBase. Please keep this for your records.
+    </p>
+    <p style="color: #94a3b8; font-size: 12px;">— LeaseBase · Property Performance Platform</p>
+  </div>
 </body>
 </html>`.trim();
 }
