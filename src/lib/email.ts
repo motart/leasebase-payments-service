@@ -48,7 +48,7 @@ function buildReceiptHtml(params: ReceiptEmailParams): string {
 <html>
 <head><meta charset="utf-8"></head>
 <body style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #F8FAFC;">
-  <div style="height: 4px; background: linear-gradient(90deg, #18D7F0 0%, #5EEA7A 60%, #D9FF1F 100%);"></div>
+  <div style="height: 4px; background-color: #18D7F0; background: linear-gradient(90deg, #18D7F0 0%, #5EEA7A 60%, #D9FF1F 100%);"></div>
   <div style="padding: 32px 24px;">
     <div style="margin-bottom: 24px;">
       <span style="font-weight: 700; font-size: 18px; color: #0F172A; letter-spacing: 0.5px;">LeaseBase</span>
