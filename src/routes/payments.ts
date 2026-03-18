@@ -252,16 +252,16 @@ router.post(
         throw new NotFoundError('No active lease found');
       }
 
-      // Guard: unit has no rent configured
+      // Guard: lease has no rent configured (lease is the canonical rent source)
       if (lease.rent_amount == null || lease.rent_amount <= 0) {
         logger.warn(
           { leaseId: lease.lease_id, rentAmount: lease.rent_amount },
-          'Checkout blocked — lease unit has no rent amount configured',
+          'Checkout blocked — lease has no rent amount configured',
         );
         return res.status(422).json({
           error: {
             code: 'NO_RENT_CONFIGURED',
-            message: 'Rent amount is not configured for this unit. Contact your property manager.',
+            message: 'Rent amount is not configured for this lease. Contact your property manager.',
           },
         });
       }

@@ -135,12 +135,12 @@ router.post('/generate-charges', requireInternalKey, async (req: Request, res: R
         const errors: string[] = [];
 
         for (const lease of leases) {
-          // Skip leases whose unit has no rent configured
+          // Skip leases with no rent configured (lease is the canonical rent source)
           if (lease.rent_amount == null || lease.rent_amount <= 0) {
             skipped++;
             logger.warn(
               { leaseId: lease.lease_id, rentAmount: lease.rent_amount, unitNumber: lease.unit_number },
-              'Skipping charge generation — lease unit has no rent amount configured',
+              'Skipping charge generation — lease has no rent amount configured',
             );
             continue;
           }

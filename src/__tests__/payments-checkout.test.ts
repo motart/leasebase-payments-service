@@ -128,6 +128,8 @@ describe('POST /checkout', () => {
     expect(leaseSql).toContain('lease_tenants');
     expect(leaseSql).not.toContain('"Lease"');
     expect(leaseSql).not.toContain('"TenantProfile"');
+    // Rent now comes from lease, not unit — no unit join needed for rent
+    expect(leaseSql).toContain('l.rent_amount');
   });
 
   it('passes correct Stripe Connect parameters (destination charge)', async () => {
@@ -154,7 +156,7 @@ describe('POST /checkout', () => {
     expect(stripeArgs.cancel_url).toBe(validBody.cancelUrl);
   });
 
-  it('returns 422 when lease unit has null rent_amount', async () => {
+  it('returns 422 when lease has null rent_amount', async () => {
     activeUser.current = tenant();
     mockQueryOne.mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: null, org_id: 'org-1' });
 
@@ -164,7 +166,7 @@ describe('POST /checkout', () => {
     expect(res.body.error.code).toBe('NO_RENT_CONFIGURED');
   });
 
-  it('returns 422 when lease unit has zero rent_amount', async () => {
+  it('returns 422 when lease has zero rent_amount', async () => {
     activeUser.current = tenant();
     mockQueryOne.mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 0, org_id: 'org-1' });
 
