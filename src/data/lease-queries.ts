@@ -13,7 +13,7 @@ export interface ActiveLeaseForBilling {
   lease_id: string;
   org_id: string;
   tenant_user_id: string | null;
-  monthly_rent: number; // cents
+  rent_amount: number | null; // cents — sourced from units.rent_amount; null if unit missing or unconfigured
   start_date: string;
   end_date: string;
   property_name: string | null;
@@ -23,7 +23,7 @@ export interface ActiveLeaseForBilling {
 export interface LeaseForCheckout {
   lease_id: string;
   org_id: string;
-  monthly_rent: number; // cents
+  rent_amount: number | null; // cents — sourced from units.rent_amount; null if unit unconfigured
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────
@@ -36,10 +36,11 @@ export async function getActiveLeaseForTenant(
   orgId: string,
 ): Promise<LeaseForCheckout | null> {
   return queryOne<LeaseForCheckout>(
-    `SELECT l.id AS lease_id, l.monthly_rent, l.org_id
+    `SELECT l.id AS lease_id, u.rent_amount, l.org_id
      FROM lease_service.leases l
-     JOIN tenant_profiles tp ON tp.lease_id = l.id
-     WHERE tp.user_id = $1 AND l.org_id = $2 AND l.status = 'ACTIVE'`,
+     JOIN lease_service.lease_tenants lt ON lt.lease_id = l.id
+     JOIN property_service.units u ON l.unit_id::text = u.id::text
+     WHERE lt.tenant_id = $1 AND l.org_id = $2 AND l.status = 'ACTIVE'`,
     [userId, orgId],
   );
 }
@@ -59,14 +60,20 @@ export async function getActiveLeasesForChargeGeneration(
     `SELECT
        l.id AS lease_id,
        l.org_id,
-       tp.user_id AS tenant_user_id,
-       l.monthly_rent,
+       payer.tenant_id AS tenant_user_id,
+       u.rent_amount,
        l.start_date::text,
        l.end_date::text,
        p.name AS property_name,
        u.unit_number
      FROM lease_service.leases l
-     LEFT JOIN tenant_profiles tp ON tp.lease_id = l.id
+     LEFT JOIN LATERAL (
+       SELECT lt.tenant_id
+       FROM lease_service.lease_tenants lt
+       WHERE lt.lease_id = l.id
+       ORDER BY CASE WHEN lt.role = 'PRIMARY' THEN 0 ELSE 1 END, lt.created_at ASC
+       LIMIT 1
+     ) payer ON true
      LEFT JOIN property_service.properties p ON l.property_id::text = p.id::text
      LEFT JOIN property_service.units u ON l.unit_id::text = u.id::text
      WHERE l.status = 'ACTIVE'
