@@ -13,7 +13,7 @@ export interface ActiveLeaseForBilling {
   lease_id: string;
   org_id: string;
   tenant_user_id: string | null;
-  rent_amount: number | null; // cents — sourced from units.rent_amount; null if unit missing or unconfigured
+  rent_amount: number | null; // cents — sourced from leases.rent_amount (canonical); null if not configured
   start_date: string;
   end_date: string;
   property_name: string | null;
@@ -23,7 +23,7 @@ export interface ActiveLeaseForBilling {
 export interface LeaseForCheckout {
   lease_id: string;
   org_id: string;
-  rent_amount: number | null; // cents — sourced from units.rent_amount; null if unit unconfigured
+  rent_amount: number | null; // cents — sourced from leases.rent_amount (canonical); null if not configured
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────
@@ -36,10 +36,9 @@ export async function getActiveLeaseForTenant(
   orgId: string,
 ): Promise<LeaseForCheckout | null> {
   return queryOne<LeaseForCheckout>(
-    `SELECT l.id AS lease_id, u.rent_amount, l.org_id
+    `SELECT l.id AS lease_id, l.rent_amount, l.org_id
      FROM lease_service.leases l
      JOIN lease_service.lease_tenants lt ON lt.lease_id = l.id
-     JOIN property_service.units u ON l.unit_id::text = u.id::text
      WHERE lt.tenant_id = $1 AND l.org_id = $2 AND l.status = 'ACTIVE'`,
     [userId, orgId],
   );
@@ -61,7 +60,7 @@ export async function getActiveLeasesForChargeGeneration(
        l.id AS lease_id,
        l.org_id,
        payer.tenant_id AS tenant_user_id,
-       u.rent_amount,
+       l.rent_amount,
        l.start_date::text,
        l.end_date::text,
        p.name AS property_name,
