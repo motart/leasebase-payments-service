@@ -67,7 +67,7 @@ describe('GET / — autopay status', () => {
   it('returns disabled status when no enrollment exists', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // active lease
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // active lease
       .mockResolvedValueOnce(null) // no enrollment
       .mockResolvedValueOnce(null); // no default PM
 
@@ -80,7 +80,7 @@ describe('GET / — autopay status', () => {
   it('returns enabled status with payment method info', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' })
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' })
       .mockResolvedValueOnce({ id: 'ae-1', status: 'ENABLED', payment_method_id: 'pm-1', lease_id: 'lease-1' })
       .mockResolvedValueOnce({ id: 'pm-1', type: 'card', last4: '4242', brand: 'visa' });
 
@@ -95,7 +95,7 @@ describe('PATCH / — enable/disable autopay', () => {
   it('rejects enabling without a default payment method', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // active lease
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // active lease
       .mockResolvedValueOnce(null); // no default PM
 
     const res = await req(port, 'PATCH', '/ap/', { enabled: true });
@@ -106,7 +106,7 @@ describe('PATCH / — enable/disable autopay', () => {
   it('enables autopay when default payment method exists', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // active lease
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // active lease
       .mockResolvedValueOnce({ id: 'pm-1' }) // default PM
       .mockResolvedValueOnce({ id: 'ae-1', status: 'ENABLED', lease_id: 'lease-1' }) // upsert result
       .mockResolvedValueOnce(undefined); // audit log
@@ -119,7 +119,7 @@ describe('PATCH / — enable/disable autopay', () => {
   it('disables autopay', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' })
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' })
       .mockResolvedValueOnce({ id: 'ae-1', status: 'DISABLED', lease_id: 'lease-1' })
       .mockResolvedValueOnce(undefined); // audit log
 

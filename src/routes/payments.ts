@@ -252,6 +252,20 @@ router.post(
         throw new NotFoundError('No active lease found');
       }
 
+      // Guard: unit has no rent configured
+      if (lease.rent_amount == null || lease.rent_amount <= 0) {
+        logger.warn(
+          { leaseId: lease.lease_id, rentAmount: lease.rent_amount },
+          'Checkout blocked — lease unit has no rent amount configured',
+        );
+        return res.status(422).json({
+          error: {
+            code: 'NO_RENT_CONFIGURED',
+            message: 'Rent amount is not configured for this unit. Contact your property manager.',
+          },
+        });
+      }
+
       // 2. Find or create PENDING charge for current billing period
       const now = new Date();
       const billingPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
@@ -268,7 +282,7 @@ router.post(
            VALUES ($1, $2, $3, 'RENT', $4, 'usd', $5::date, $5::date, $6, $7)
            ON CONFLICT (idempotency_key) DO UPDATE SET id = charge.id
            RETURNING id, amount, status`,
-          [user.orgId, lease.lease_id, user.userId, lease.monthly_rent, billingPeriod, idempotencyKey, `Rent for ${billingPeriod}`],
+          [user.orgId, lease.lease_id, user.userId, lease.rent_amount, billingPeriod, idempotencyKey, `Rent for ${billingPeriod}`],
         );
 
         await insertAuditLog({

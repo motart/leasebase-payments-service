@@ -87,7 +87,7 @@ describe('POST /checkout', () => {
     activeUser.current = tenant();
 
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // getActiveLeaseForTenant
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // getActiveLeaseForTenant
       .mockResolvedValueOnce(null) // find charge by idempotency_key (not found)
       .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // INSERT charge
       .mockResolvedValueOnce(undefined) // insertAuditLog for charge
@@ -108,11 +108,11 @@ describe('POST /checkout', () => {
     expect(res.body.data.sessionId).toBe('cs_test_session');
   });
 
-  it('queries lease_service.leases via tenant_profiles (not Prisma tables)', async () => {
+  it('queries lease_service.leases via lease_tenants (not Prisma tables)', async () => {
     activeUser.current = tenant();
 
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' })
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' })
       .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // found existing charge
       .mockResolvedValueOnce(null) // no existing txn
       .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123', default_fee_percent: 100 })
@@ -125,7 +125,7 @@ describe('POST /checkout', () => {
 
     const leaseSql = mockQueryOne.mock.calls[0][0] as string;
     expect(leaseSql).toContain('lease_service.leases');
-    expect(leaseSql).toContain('tenant_profiles');
+    expect(leaseSql).toContain('lease_tenants');
     expect(leaseSql).not.toContain('"Lease"');
     expect(leaseSql).not.toContain('"TenantProfile"');
   });
@@ -134,7 +134,7 @@ describe('POST /checkout', () => {
     activeUser.current = tenant();
 
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 200000, org_id: 'org-1' })
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 200000, org_id: 'org-1' })
       .mockResolvedValueOnce({ id: 'c-1', amount: 200000, status: 'PENDING' }) // found existing charge
       .mockResolvedValueOnce(null) // no existing txn
       .mockResolvedValueOnce({ stripe_account_id: 'acct_xyz789', default_fee_percent: 100 })
@@ -154,6 +154,26 @@ describe('POST /checkout', () => {
     expect(stripeArgs.cancel_url).toBe(validBody.cancelUrl);
   });
 
+  it('returns 422 when lease unit has null rent_amount', async () => {
+    activeUser.current = tenant();
+    mockQueryOne.mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: null, org_id: 'org-1' });
+
+    const res = await req(port, 'POST', '/p/checkout', validBody);
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_RENT_CONFIGURED');
+  });
+
+  it('returns 422 when lease unit has zero rent_amount', async () => {
+    activeUser.current = tenant();
+    mockQueryOne.mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 0, org_id: 'org-1' });
+
+    const res = await req(port, 'POST', '/p/checkout', validBody);
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_RENT_CONFIGURED');
+  });
+
   it('returns 404 when tenant has no active lease', async () => {
     activeUser.current = tenant();
     mockQueryOne.mockResolvedValueOnce(null); // no lease found
@@ -167,7 +187,7 @@ describe('POST /checkout', () => {
   it('returns 422 when org has no active payment account', async () => {
     activeUser.current = tenant();
     mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', monthly_rent: 150000, org_id: 'org-1' }) // lease
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // lease
       .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge exists
       .mockResolvedValueOnce(null) // no existing txn
       .mockResolvedValueOnce(null); // no payment_account

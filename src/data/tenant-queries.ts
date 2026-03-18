@@ -1,7 +1,7 @@
 /**
  * Cross-schema tenant queries.
  *
- * All reads from tenant_profiles / public."User" are isolated here.
+ * All reads from lease_service.lease_tenants / public."User" are isolated here.
  * Route handlers never write raw cross-schema SQL for tenant resolution.
  */
 import { query, queryOne } from '@leasebase/service-common';
@@ -25,10 +25,10 @@ export async function getTenantLeaseLinks(
   orgId: string,
 ): Promise<TenantLeaseLink[]> {
   return query<TenantLeaseLink>(
-    `SELECT tp.user_id, tp.lease_id, u."organizationId" AS org_id, u.email
-     FROM tenant_profiles tp
-     JOIN public."User" u ON tp.user_id = u.id
-     WHERE tp.user_id = $1 AND u."organizationId" = $2`,
+    `SELECT lt.tenant_id AS user_id, lt.lease_id, u."organizationId" AS org_id, u.email
+     FROM lease_service.lease_tenants lt
+     JOIN public."User" u ON lt.tenant_id = u.id
+     WHERE lt.tenant_id = $1 AND u."organizationId" = $2`,
     [userId, orgId],
   );
 }
@@ -40,8 +40,8 @@ export async function tenantOwnsLease(
   userId: string,
   leaseId: string,
 ): Promise<boolean> {
-  const row = await queryOne<{ user_id: string }>(
-    `SELECT user_id FROM tenant_profiles WHERE user_id = $1 AND lease_id = $2`,
+  const row = await queryOne<{ tenant_id: string }>(
+    `SELECT tenant_id FROM lease_service.lease_tenants WHERE tenant_id = $1 AND lease_id = $2`,
     [userId, leaseId],
   );
   return row !== null;

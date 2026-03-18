@@ -135,6 +135,16 @@ router.post('/generate-charges', requireInternalKey, async (req: Request, res: R
         const errors: string[] = [];
 
         for (const lease of leases) {
+          // Skip leases whose unit has no rent configured
+          if (lease.rent_amount == null || lease.rent_amount <= 0) {
+            skipped++;
+            logger.warn(
+              { leaseId: lease.lease_id, rentAmount: lease.rent_amount, unitNumber: lease.unit_number },
+              'Skipping charge generation — lease unit has no rent amount configured',
+            );
+            continue;
+          }
+
           try {
             const created = await createChargeForLease(lease, billingPeriodStr, dueDate);
             if (created) {
@@ -185,7 +195,7 @@ async function createChargeForLease(
       lease.org_id,
       lease.lease_id,
       lease.tenant_user_id,
-      lease.monthly_rent,
+      lease.rent_amount,
       billingPeriodStr,
       dueDate,
       `Rent for ${billingPeriodStr}`,
