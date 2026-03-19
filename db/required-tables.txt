@@ -1,0 +1,38 @@
+# payments-service runtime-critical DB dependencies
+# Format: schema.table or schema.table.column
+# Used by the advisory schema drift checker during deploys.
+
+# Core identity (read via service-common requireAuth)
+public.User.id
+
+# Charges (payments-service owns this table)
+payments_service.charge.id
+payments_service.charge.organization_id
+payments_service.charge.status
+
+# Payment transactions (payments-service owns this table)
+payments_service.payment_transaction.id
+payments_service.payment_transaction.organization_id
+
+# Payment account / Stripe Connect (payments-service owns this table)
+payments_service.payment_account.id
+payments_service.payment_account.org_id
+
+# Webhook events (payments-service owns this table)
+payments_service.webhook_event.id
+
+# Receipts (payments-service owns this table)
+payments_service.receipt.id
+
+# Payment methods (payments-service owns this table)
+payments_service.payment_method.id
+
+# Autopay enrollment (payments-service owns this table)
+payments_service.autopay_enrollment.id
+payments_service.autopay_enrollment.lease_id
+
+# Job execution tracking (payments-service owns this table)
+payments_service.job_execution.id
+
+# Cross-schema reads (lease context for charges + transactions)
+lease_service.leases.id
