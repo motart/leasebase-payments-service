@@ -31,8 +31,19 @@ payments_service.payment_method.id
 payments_service.autopay_enrollment.id
 payments_service.autopay_enrollment.lease_id
 
+# Autopay attempt log (payments-service owns this table)
+payments_service.autopay_attempt_log.id
+payments_service.autopay_attempt_log.charge_id
+
+# Payment audit log (payments-service owns this table)
+payments_service.payment_audit_log.id
+
 # Job execution tracking (payments-service owns this table)
 payments_service.job_execution.id
 
-# Cross-schema reads (lease context for charges + transactions)
+# Cross-schema reads (lease + property context for charges, receipts, checkout)
 lease_service.leases.id
+lease_service.lease_tenants.lease_id
+lease_service.lease_tenants.tenant_id
+property_service.properties.id
+property_service.units.id
