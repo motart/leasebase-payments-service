@@ -14,6 +14,7 @@ initStripe();
 
 const app = createApp({
   healthChecks: [{ name: 'database', check: checkDbConnection }],
+  captureRawBody: true,
 });
 
 // Webhook routes use req.rawBody (captured by createApp's verify callback)
