@@ -280,4 +280,119 @@ router.get('/payment-stats', async (_req: Request, res: Response, next: NextFunc
   } catch (err) { next(err); }
 });
 
+// ── GET /admin/payment-account/:orgId — Inspect payment account with Stripe truth ─
+
+router.get('/payment-account/:orgId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orgId } = req.params;
+
+    const account = await queryOne<{
+      id: string; org_id: string; stripe_account_id: string; status: string;
+      charges_enabled: boolean; payouts_enabled: boolean;
+      capabilities: any; requirements: any;
+      created_at: string; updated_at: string;
+    }>(
+      `SELECT * FROM payment_account WHERE org_id = $1`,
+      [orgId],
+    );
+
+    if (!account) {
+      return res.json({ local: null, stripe: null, mismatch: false });
+    }
+
+    let stripeData: any = null;
+    let mismatch = false;
+
+    if (isStripeConfigured()) {
+      try {
+        const stripe = getStripe();
+        const stripeAcct = await stripe.accounts.retrieve(account.stripe_account_id);
+        stripeData = {
+          charges_enabled: stripeAcct.charges_enabled,
+          payouts_enabled: stripeAcct.payouts_enabled,
+          details_submitted: stripeAcct.details_submitted,
+          requirements_due: stripeAcct.requirements?.currently_due,
+          disabled_reason: stripeAcct.requirements?.disabled_reason,
+        };
+
+        const stripeActive = stripeAcct.charges_enabled && stripeAcct.payouts_enabled;
+        mismatch = (stripeActive && account.status !== 'ACTIVE') ||
+                   (!stripeActive && account.status === 'ACTIVE');
+      } catch (err) {
+        stripeData = { error: (err as Error).message };
+      }
+    }
+
+    res.json({ local: account, stripe: stripeData, mismatch });
+  } catch (err) { next(err); }
+});
+
+// ── GET /admin/charge/:chargeId — Charge timeline with transactions ──────────
+
+router.get('/charge/:chargeId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { chargeId } = req.params;
+
+    const charge = await queryOne<any>(
+      `SELECT * FROM charge WHERE id = $1`,
+      [chargeId],
+    );
+
+    if (!charge) {
+      return res.status(404).json({ error: 'Charge not found' });
+    }
+
+    const transactions = await query<any>(
+      `SELECT id, status, amount, method, source, stripe_payment_intent_id,
+              stripe_checkout_session_id, failure_code, failure_message,
+              created_at, updated_at
+       FROM payment_transaction WHERE charge_id = $1
+       ORDER BY created_at DESC`,
+      [chargeId],
+    );
+
+    const auditLog = await query<any>(
+      `SELECT action, old_status, new_status, metadata, actor_type, created_at
+       FROM payment_audit_log
+       WHERE entity_id = $1 OR (metadata::text LIKE $2)
+       ORDER BY created_at DESC LIMIT 20`,
+      [chargeId, `%${chargeId}%`],
+    );
+
+    res.json({ charge, transactions, audit_log: auditLog });
+  } catch (err) { next(err); }
+});
+
+// ── POST /admin/reconcile/:orgId — Force payment account reconciliation ─────
+
+router.post('/reconcile/:orgId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orgId } = req.params;
+
+    if (!isStripeConfigured()) {
+      return res.status(503).json({ error: 'Stripe not configured' });
+    }
+
+    const account = await queryOne<{
+      id: string; stripe_account_id: string; status: string; default_fee_percent: number;
+    }>(
+      `SELECT id, stripe_account_id, status, default_fee_percent FROM payment_account WHERE org_id = $1`,
+      [orgId],
+    );
+
+    if (!account) {
+      return res.status(404).json({ error: 'No payment account for this org' });
+    }
+
+    const { reconcilePaymentAccount } = await import('../lib/reconcile-payment-account');
+    const result = await reconcilePaymentAccount(account, orgId);
+
+    res.json({
+      previous_status: account.status,
+      reconciled: result ? result.status : account.status,
+      changed: result ? result.status !== account.status : false,
+    });
+  } catch (err) { next(err); }
+});
+
 export const adminRouter = router;
