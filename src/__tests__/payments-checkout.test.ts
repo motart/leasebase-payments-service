@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 
-const { mockQuery, mockQueryOne, activeUser, mockStripeCreate, mockIsStripeConfigured, mockAccountsRetrieve, mockPiCreate, mockPiRetrieve, mockCustomersCreate } = vi.hoisted(() => ({
+const { mockQuery, mockQueryOne, activeUser, mockIsStripeConfigured, mockAccountsRetrieve, mockPiCreate, mockPiRetrieve, mockCustomersCreate } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockQueryOne: vi.fn(),
   activeUser: { current: null as any },
-  mockStripeCreate: vi.fn(),
   mockIsStripeConfigured: vi.fn(() => true),
   mockAccountsRetrieve: vi.fn(),
   mockPiCreate: vi.fn(),
@@ -29,7 +28,6 @@ vi.mock('@leasebase/service-common', async (importOriginal) => {
 
 vi.mock('../stripe/client', () => ({
   getStripe: () => ({
-    checkout: { sessions: { create: mockStripeCreate } },
     accounts: { retrieve: mockAccountsRetrieve },
     paymentIntents: { create: mockPiCreate, retrieve: mockPiRetrieve },
     customers: { create: mockCustomersCreate },
@@ -76,266 +74,11 @@ afterAll(() => server?.close());
 beforeEach(() => {
   mockQuery.mockReset();
   mockQueryOne.mockReset();
-  mockStripeCreate.mockReset();
   mockAccountsRetrieve.mockReset();
   mockPiCreate.mockReset();
   mockPiRetrieve.mockReset();
   mockCustomersCreate.mockReset();
   mockIsStripeConfigured.mockReturnValue(true);
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-// POST /checkout — Stripe Checkout Session for tenant rent payment
-// ════════════════════════════════════════════════════════════════════════════
-
-describe('POST /checkout', () => {
-  const validBody = {
-    returnUrl: 'https://app.leasebase.ai/payments/success',
-    cancelUrl: 'https://app.leasebase.ai/payments/cancel',
-  };
-
-  it('creates a checkout session for authenticated tenant with active lease', async () => {
-    activeUser.current = tenant();
-
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // getActiveLeaseForTenant
-      .mockResolvedValueOnce(null) // find charge by idempotency_key (not found)
-      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // INSERT charge
-      .mockResolvedValueOnce(undefined) // insertAuditLog for charge
-      .mockResolvedValueOnce(null) // existing transaction check
-      .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123', default_fee_percent: 100 }) // payment_account
-      .mockResolvedValueOnce({ id: 'txn-1' }) // INSERT payment_transaction
-      .mockResolvedValueOnce(undefined); // insertAuditLog for txn
-
-    mockStripeCreate.mockResolvedValueOnce({
-      id: 'cs_test_session',
-      url: 'https://checkout.stripe.com/c/pay/cs_test_session',
-    });
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(201);
-    expect(res.body.data.checkoutUrl).toBe('https://checkout.stripe.com/c/pay/cs_test_session');
-    expect(res.body.data.sessionId).toBe('cs_test_session');
-  });
-
-  it('queries lease_service.leases via lease_tenants (not Prisma tables)', async () => {
-    activeUser.current = tenant();
-
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' })
-      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // found existing charge
-      .mockResolvedValueOnce(null) // no existing txn
-      .mockResolvedValueOnce({ stripe_account_id: 'acct_abc123', default_fee_percent: 100 })
-      .mockResolvedValueOnce({ id: 'txn-1' })
-      .mockResolvedValueOnce(undefined);
-
-    mockStripeCreate.mockResolvedValueOnce({ id: 'cs_test', url: 'https://checkout.stripe.com/x' });
-
-    await req(port, 'POST', '/p/checkout', validBody);
-
-    const leaseSql = mockQueryOne.mock.calls[0][0] as string;
-    expect(leaseSql).toContain('lease_service.leases');
-    expect(leaseSql).toContain('lease_tenants');
-    expect(leaseSql).not.toContain('"Lease"');
-    expect(leaseSql).not.toContain('"TenantProfile"');
-    // Rent now comes from lease, not unit — no unit join needed for rent
-    expect(leaseSql).toContain('l.rent_amount');
-  });
-
-  it('passes correct Stripe Connect parameters (destination charge)', async () => {
-    activeUser.current = tenant();
-
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 200000, org_id: 'org-1' })
-      .mockResolvedValueOnce({ id: 'c-1', amount: 200000, status: 'PENDING' }) // found existing charge
-      .mockResolvedValueOnce(null) // no existing txn
-      .mockResolvedValueOnce({ stripe_account_id: 'acct_xyz789', default_fee_percent: 100 })
-      .mockResolvedValueOnce({ id: 'txn-1' })
-      .mockResolvedValueOnce(undefined);
-
-    mockStripeCreate.mockResolvedValueOnce({ id: 'cs_test', url: 'https://checkout.stripe.com/x' });
-
-    await req(port, 'POST', '/p/checkout', validBody);
-
-    const stripeArgs = mockStripeCreate.mock.calls[0][0];
-    expect(stripeArgs.mode).toBe('payment');
-    expect(stripeArgs.line_items[0].price_data.unit_amount).toBe(200000);
-    expect(stripeArgs.payment_intent_data.transfer_data.destination).toBe('acct_xyz789');
-    expect(stripeArgs.payment_intent_data.application_fee_amount).toBe(2000);
-    expect(stripeArgs.success_url).toBe(validBody.returnUrl);
-    expect(stripeArgs.cancel_url).toBe(validBody.cancelUrl);
-  });
-
-  it('returns 422 when lease has null rent_amount', async () => {
-    activeUser.current = tenant();
-    mockQueryOne.mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: null, org_id: 'org-1' });
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('NO_RENT_CONFIGURED');
-  });
-
-  it('returns 422 when lease has zero rent_amount', async () => {
-    activeUser.current = tenant();
-    mockQueryOne.mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 0, org_id: 'org-1' });
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('NO_RENT_CONFIGURED');
-  });
-
-  it('returns 404 when tenant has no active lease', async () => {
-    activeUser.current = tenant();
-    mockQueryOne.mockResolvedValueOnce(null); // no lease found
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(404);
-    expect(res.body.error.message).toContain('No active lease');
-  });
-
-  it('returns 422 when org has no active payment account', async () => {
-    activeUser.current = tenant();
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // lease
-      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge exists
-      .mockResolvedValueOnce(null) // no existing txn
-      .mockResolvedValueOnce(null); // no payment_account
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('NO_PAYMENT_ACCOUNT');
-  });
-
-  it('reconciles stale ONBOARDING_INCOMPLETE → ACTIVE from Stripe truth and proceeds with checkout', async () => {
-    activeUser.current = tenant();
-
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // getActiveLeaseForTenant
-      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge exists
-      .mockResolvedValueOnce(null) // no existing txn
-      .mockResolvedValueOnce(null) // payment_account WHERE status = 'ACTIVE' → not found
-      .mockResolvedValueOnce({ id: 'pa-1', stripe_account_id: 'acct_stale', default_fee_percent: 100, status: 'ONBOARDING_INCOMPLETE' }) // payment_account WHERE org_id (any status)
-      .mockResolvedValueOnce(undefined) // UPDATE payment_account (reconciliation)
-      .mockResolvedValueOnce({ id: 'txn-1' }) // INSERT payment_transaction
-      .mockResolvedValueOnce(undefined); // insertAuditLog
-
-    // Stripe says the account is actually ready
-    mockAccountsRetrieve.mockResolvedValueOnce({
-      id: 'acct_stale',
-      charges_enabled: true,
-      payouts_enabled: true,
-      capabilities: { card_payments: 'active' },
-      requirements: { currently_due: [], pending_verification: [], disabled_reason: null },
-    });
-
-    mockStripeCreate.mockResolvedValueOnce({
-      id: 'cs_reconciled',
-      url: 'https://checkout.stripe.com/c/pay/cs_reconciled',
-    });
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(201);
-    expect(res.body.data.checkoutUrl).toContain('cs_reconciled');
-    // Verify Stripe accounts.retrieve was called
-    expect(mockAccountsRetrieve).toHaveBeenCalledWith('acct_stale');
-  });
-
-  it('still returns 422 when Stripe truth confirms account is not ACTIVE', async () => {
-    activeUser.current = tenant();
-
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // lease
-      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge
-      .mockResolvedValueOnce(null) // no existing txn
-      .mockResolvedValueOnce(null) // payment_account ACTIVE → not found
-      .mockResolvedValueOnce({ id: 'pa-1', stripe_account_id: 'acct_notready', default_fee_percent: 100, status: 'ONBOARDING_INCOMPLETE' }) // any-status row
-      .mockResolvedValueOnce(undefined); // UPDATE (reconciliation writes new status)
-
-    // Stripe says still not ready
-    mockAccountsRetrieve.mockResolvedValueOnce({
-      id: 'acct_notready',
-      charges_enabled: false,
-      payouts_enabled: false,
-      capabilities: {},
-      requirements: { currently_due: ['individual.first_name'], pending_verification: [], disabled_reason: null },
-    });
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('NO_PAYMENT_ACCOUNT');
-  });
-
-  it('returns 422 when no payment_account row exists at all (not just non-ACTIVE)', async () => {
-    activeUser.current = tenant();
-
-    mockQueryOne
-      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // lease
-      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge
-      .mockResolvedValueOnce(null) // no existing txn
-      .mockResolvedValueOnce(null) // payment_account ACTIVE → not found
-      .mockResolvedValueOnce(null); // payment_account any status → not found either
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(422);
-    expect(res.body.error.code).toBe('NO_PAYMENT_ACCOUNT');
-    // Should NOT have called Stripe
-    expect(mockAccountsRetrieve).not.toHaveBeenCalled();
-  });
-
-  it('returns 503 when Stripe is not configured', async () => {
-    activeUser.current = tenant();
-    mockIsStripeConfigured.mockReturnValue(false);
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(503);
-    expect(res.body.error.code).toBe('STRIPE_NOT_CONFIGURED');
-  });
-
-  it('rejects OWNER role (checkout is tenant-only)', async () => {
-    activeUser.current = owner();
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(403);
-  });
-
-  it('rejects unauthenticated requests', async () => {
-    activeUser.current = null;
-
-    const res = await req(port, 'POST', '/p/checkout', validBody);
-
-    expect(res.status).toBe(401);
-  });
-
-  it('rejects invalid body (missing returnUrl)', async () => {
-    activeUser.current = tenant();
-
-    const res = await req(port, 'POST', '/p/checkout', { cancelUrl: 'https://example.com' });
-
-    // validateBody throws ZodError; status depends on service-common error mapping
-    expect([400, 422, 500]).toContain(res.status);
-  });
-
-  it('scopes lease query by user_id and orgId from JWT', async () => {
-    activeUser.current = tenant({ userId: 'u-42', orgId: 'org-7' });
-
-    mockQueryOne.mockResolvedValueOnce(null); // no lease
-
-    await req(port, 'POST', '/p/checkout', validBody);
-
-    const params = mockQueryOne.mock.calls[0][1] as any[];
-    expect(params[0]).toBe('u-42');
-    expect(params[1]).toBe('org-7');
-  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -473,8 +216,8 @@ describe('POST /checkout/create-intent', () => {
 // Route ordering — /checkout must come before /:id
 // ════════════════════════════════════════════════════════════════════════════
 
-describe('route ordering — /checkout', () => {
-  it('should register POST /checkout before GET /:id', () => {
+describe('route ordering — /checkout/create-intent before /:id', () => {
+  it('should register POST /checkout/create-intent before GET /:id', () => {
     const routes = (paymentsRouter as any).stack
       ?.filter((layer: any) => layer.route)
       .map((layer: any) => ({
@@ -482,11 +225,11 @@ describe('route ordering — /checkout', () => {
         path: layer.route.path,
       })) ?? [];
 
-    const checkoutIdx = routes.findIndex((r: any) => r.method === 'post' && r.path === '/checkout');
+    const createIntentIdx = routes.findIndex((r: any) => r.method === 'post' && r.path === '/checkout/create-intent');
     const getIdIdx = routes.findIndex((r: any) => r.method === 'get' && r.path === '/:id');
 
-    expect(checkoutIdx).toBeGreaterThan(-1);
+    expect(createIntentIdx).toBeGreaterThan(-1);
     expect(getIdIdx).toBeGreaterThan(-1);
-    expect(checkoutIdx).toBeLessThan(getIdIdx);
+    expect(createIntentIdx).toBeLessThan(getIdIdx);
   });
 });
