@@ -12,6 +12,7 @@ import { getActiveLeaseForTenant } from '../data/lease-queries';
 import { getTenantLeaseLinks, tenantOwnsLease } from '../data/tenant-queries';
 import { insertAuditLog } from '../lib/audit';
 import { calculateFee } from '../lib/fees';
+import { reconcilePaymentAccount } from '../lib/reconcile-payment-account';
 
 const router = Router();
 
@@ -315,10 +316,29 @@ router.post(
       }
 
       // 3. Get org's connected Stripe account + fee config
-      const account = await queryOne<{ stripe_account_id: string; default_fee_percent: number }>(
-        `SELECT stripe_account_id, default_fee_percent FROM payment_account WHERE org_id = $1 AND status = 'ACTIVE'`,
+      //    Fast path: ACTIVE row exists in local DB.
+      //    Slow path: row exists but non-ACTIVE → reconcile against Stripe truth.
+      let account = await queryOne<{ id: string; stripe_account_id: string; default_fee_percent: number; status: string }>(
+        `SELECT id, stripe_account_id, default_fee_percent, status FROM payment_account WHERE org_id = $1 AND status = 'ACTIVE'`,
         [user.orgId],
       );
+
+      if (!account) {
+        // Check if a non-ACTIVE row exists — may be stale if webhook was missed
+        const staleAccount = await queryOne<{ id: string; stripe_account_id: string; default_fee_percent: number; status: string }>(
+          `SELECT id, stripe_account_id, default_fee_percent, status FROM payment_account WHERE org_id = $1`,
+          [user.orgId],
+        );
+
+        if (staleAccount) {
+          // Reconcile against Stripe truth — may promote to ACTIVE in this request
+          const reconciled = await reconcilePaymentAccount(staleAccount, user.orgId);
+          if (reconciled) {
+            account = { id: staleAccount.id, ...reconciled };
+          }
+        }
+      }
+
       if (!account) {
         return res.status(422).json({
           error: { code: 'NO_PAYMENT_ACCOUNT', message: 'The property owner has not enabled payments yet. Contact them for assistance.' },

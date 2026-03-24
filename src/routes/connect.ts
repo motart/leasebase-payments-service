@@ -15,6 +15,7 @@ import {
 } from '@leasebase/service-common';
 import { getStripe, isStripeConfigured } from '../stripe/client';
 import { deriveConnectState } from '../lib/connect-status';
+import { reconcilePaymentAccount } from '../lib/reconcile-payment-account';
 
 const router = Router();
 
@@ -140,41 +141,12 @@ router.get(
       // Self-healing reconciliation: if local status is not ACTIVE but Stripe
       // says charges + payouts are enabled, update the local row. This handles
       // cases where the webhook was missed, delayed, or failed historically.
-      if (account.status !== 'ACTIVE' && isStripeConfigured()) {
-        try {
-          const stripe = getStripe();
-          const stripeAcct = await stripe.accounts.retrieve(account.stripe_account_id);
-          const derived = deriveConnectState(stripeAcct);
-
-          if (derived.status !== account.status) {
-            await queryOne(
-              `UPDATE payment_account
-               SET status = $1, charges_enabled = $2, payouts_enabled = $3,
-                   capabilities = $4, requirements = $5, updated_at = NOW()
-               WHERE id = $6`,
-              [
-                derived.status,
-                derived.charges_enabled,
-                derived.payouts_enabled,
-                derived.capabilities,
-                derived.requirements,
-                account.id,
-              ],
-            );
-
-            logger.info(
-              { orgId: user.orgId, oldStatus: account.status, newStatus: derived.status },
-              'Connect status reconciled from Stripe truth',
-            );
-
-            // Use reconciled values for response
-            account.status = derived.status as typeof account.status;
-            account.charges_enabled = derived.charges_enabled;
-            account.payouts_enabled = derived.payouts_enabled;
-          }
-        } catch (err) {
-          // Reconciliation is best-effort — don't fail the status request
-          logger.warn({ err, orgId: user.orgId }, 'Connect status reconciliation failed — returning local state');
+      if (account.status !== 'ACTIVE') {
+        const reconciled = await reconcilePaymentAccount(account, user.orgId);
+        if (reconciled) {
+          account.status = reconciled.status as typeof account.status;
+          account.charges_enabled = true;
+          account.payouts_enabled = true;
         }
       }
 

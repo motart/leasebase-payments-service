@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 
-const { mockQuery, mockQueryOne, activeUser, mockStripeCreate, mockIsStripeConfigured } = vi.hoisted(() => ({
+const { mockQuery, mockQueryOne, activeUser, mockStripeCreate, mockIsStripeConfigured, mockAccountsRetrieve } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockQueryOne: vi.fn(),
   activeUser: { current: null as any },
   mockStripeCreate: vi.fn(),
   mockIsStripeConfigured: vi.fn(() => true),
+  mockAccountsRetrieve: vi.fn(),
 }));
 
 vi.mock('@leasebase/service-common', async (importOriginal) => {
@@ -26,6 +27,7 @@ vi.mock('@leasebase/service-common', async (importOriginal) => {
 vi.mock('../stripe/client', () => ({
   getStripe: () => ({
     checkout: { sessions: { create: mockStripeCreate } },
+    accounts: { retrieve: mockAccountsRetrieve },
   }),
   isStripeConfigured: () => mockIsStripeConfigured(),
   getPublishableKey: () => 'pk_test_xxx',
@@ -70,6 +72,7 @@ beforeEach(() => {
   mockQuery.mockReset();
   mockQueryOne.mockReset();
   mockStripeCreate.mockReset();
+  mockAccountsRetrieve.mockReset();
   mockIsStripeConfigured.mockReturnValue(true);
 });
 
@@ -198,6 +201,85 @@ describe('POST /checkout', () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('NO_PAYMENT_ACCOUNT');
+  });
+
+  it('reconciles stale ONBOARDING_INCOMPLETE → ACTIVE from Stripe truth and proceeds with checkout', async () => {
+    activeUser.current = tenant();
+
+    mockQueryOne
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // getActiveLeaseForTenant
+      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge exists
+      .mockResolvedValueOnce(null) // no existing txn
+      .mockResolvedValueOnce(null) // payment_account WHERE status = 'ACTIVE' → not found
+      .mockResolvedValueOnce({ id: 'pa-1', stripe_account_id: 'acct_stale', default_fee_percent: 100, status: 'ONBOARDING_INCOMPLETE' }) // payment_account WHERE org_id (any status)
+      .mockResolvedValueOnce(undefined) // UPDATE payment_account (reconciliation)
+      .mockResolvedValueOnce({ id: 'txn-1' }) // INSERT payment_transaction
+      .mockResolvedValueOnce(undefined); // insertAuditLog
+
+    // Stripe says the account is actually ready
+    mockAccountsRetrieve.mockResolvedValueOnce({
+      id: 'acct_stale',
+      charges_enabled: true,
+      payouts_enabled: true,
+      capabilities: { card_payments: 'active' },
+      requirements: { currently_due: [], pending_verification: [], disabled_reason: null },
+    });
+
+    mockStripeCreate.mockResolvedValueOnce({
+      id: 'cs_reconciled',
+      url: 'https://checkout.stripe.com/c/pay/cs_reconciled',
+    });
+
+    const res = await req(port, 'POST', '/p/checkout', validBody);
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.checkoutUrl).toContain('cs_reconciled');
+    // Verify Stripe accounts.retrieve was called
+    expect(mockAccountsRetrieve).toHaveBeenCalledWith('acct_stale');
+  });
+
+  it('still returns 422 when Stripe truth confirms account is not ACTIVE', async () => {
+    activeUser.current = tenant();
+
+    mockQueryOne
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // lease
+      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge
+      .mockResolvedValueOnce(null) // no existing txn
+      .mockResolvedValueOnce(null) // payment_account ACTIVE → not found
+      .mockResolvedValueOnce({ id: 'pa-1', stripe_account_id: 'acct_notready', default_fee_percent: 100, status: 'ONBOARDING_INCOMPLETE' }) // any-status row
+      .mockResolvedValueOnce(undefined); // UPDATE (reconciliation writes new status)
+
+    // Stripe says still not ready
+    mockAccountsRetrieve.mockResolvedValueOnce({
+      id: 'acct_notready',
+      charges_enabled: false,
+      payouts_enabled: false,
+      capabilities: {},
+      requirements: { currently_due: ['individual.first_name'], pending_verification: [], disabled_reason: null },
+    });
+
+    const res = await req(port, 'POST', '/p/checkout', validBody);
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_PAYMENT_ACCOUNT');
+  });
+
+  it('returns 422 when no payment_account row exists at all (not just non-ACTIVE)', async () => {
+    activeUser.current = tenant();
+
+    mockQueryOne
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 150000, org_id: 'org-1' }) // lease
+      .mockResolvedValueOnce({ id: 'c-1', amount: 150000, status: 'PENDING' }) // charge
+      .mockResolvedValueOnce(null) // no existing txn
+      .mockResolvedValueOnce(null) // payment_account ACTIVE → not found
+      .mockResolvedValueOnce(null); // payment_account any status → not found either
+
+    const res = await req(port, 'POST', '/p/checkout', validBody);
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('NO_PAYMENT_ACCOUNT');
+    // Should NOT have called Stripe
+    expect(mockAccountsRetrieve).not.toHaveBeenCalled();
   });
 
   it('returns 503 when Stripe is not configured', async () => {
