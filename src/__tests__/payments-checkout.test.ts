@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 
-const { mockQuery, mockQueryOne, activeUser, mockStripeCreate, mockIsStripeConfigured, mockAccountsRetrieve, mockPiCreate, mockCustomersCreate } = vi.hoisted(() => ({
+const { mockQuery, mockQueryOne, activeUser, mockStripeCreate, mockIsStripeConfigured, mockAccountsRetrieve, mockPiCreate, mockPiRetrieve, mockCustomersCreate } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockQueryOne: vi.fn(),
   activeUser: { current: null as any },
@@ -9,6 +9,7 @@ const { mockQuery, mockQueryOne, activeUser, mockStripeCreate, mockIsStripeConfi
   mockIsStripeConfigured: vi.fn(() => true),
   mockAccountsRetrieve: vi.fn(),
   mockPiCreate: vi.fn(),
+  mockPiRetrieve: vi.fn(),
   mockCustomersCreate: vi.fn(),
 }));
 
@@ -30,7 +31,7 @@ vi.mock('../stripe/client', () => ({
   getStripe: () => ({
     checkout: { sessions: { create: mockStripeCreate } },
     accounts: { retrieve: mockAccountsRetrieve },
-    paymentIntents: { create: mockPiCreate },
+    paymentIntents: { create: mockPiCreate, retrieve: mockPiRetrieve },
     customers: { create: mockCustomersCreate },
   }),
   isStripeConfigured: () => mockIsStripeConfigured(),
@@ -78,6 +79,7 @@ beforeEach(() => {
   mockStripeCreate.mockReset();
   mockAccountsRetrieve.mockReset();
   mockPiCreate.mockReset();
+  mockPiRetrieve.mockReset();
   mockCustomersCreate.mockReset();
   mockIsStripeConfigured.mockReturnValue(true);
 });
@@ -419,18 +421,45 @@ describe('POST /checkout/create-intent', () => {
     expect(res.body.error.code).toBe('NO_RENT_CONFIGURED');
   });
 
-  it('returns 409 PAYMENT_IN_PROGRESS for duplicate attempt', async () => {
+  it('returns 409 PAYMENT_IN_PROGRESS when Stripe PI is processing', async () => {
     activeUser.current = tenant();
 
     mockQueryOne
       .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 180000, org_id: 'org-1' })
       .mockResolvedValueOnce({ id: 'c-1', amount: 180000, status: 'PENDING' })
-      .mockResolvedValueOnce({ id: 'existing-txn' }); // existing in-progress txn
+      .mockResolvedValueOnce({ id: 'existing-txn', stripe_payment_intent_id: 'pi_active', status: 'PENDING', charge_id: 'c-1' });
+
+    mockPiRetrieve.mockResolvedValueOnce({ id: 'pi_active', status: 'processing' });
 
     const res = await req(port, 'POST', '/p/checkout/create-intent', {});
 
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('PAYMENT_IN_PROGRESS');
+  });
+
+  it('clears stale PENDING txn and creates new intent when Stripe PI is abandoned', async () => {
+    activeUser.current = tenant();
+
+    mockQueryOne
+      .mockResolvedValueOnce({ lease_id: 'lease-1', rent_amount: 180000, org_id: 'org-1' }) // lease
+      .mockResolvedValueOnce({ id: 'c-1', amount: 180000, status: 'PENDING' }) // charge
+      .mockResolvedValueOnce({ id: 'stale-txn', stripe_payment_intent_id: 'pi_stale', status: 'PENDING', charge_id: 'c-1' }) // existing stale txn
+      .mockResolvedValueOnce(undefined) // UPDATE stale txn to CANCELED
+      .mockResolvedValueOnce({ id: 'pa-1', stripe_account_id: 'acct_dest', default_fee_percent: 100, status: 'ACTIVE' }) // payment_account
+      .mockResolvedValueOnce({ stripe_customer_id: 'cus_existing' }) // customer
+      .mockResolvedValueOnce({ id: 'txn-new' }) // INSERT new txn
+      .mockResolvedValueOnce(undefined); // audit log
+
+    // Stripe says old PI is abandoned
+    mockPiRetrieve.mockResolvedValueOnce({ id: 'pi_stale', status: 'requires_payment_method' });
+    // New PI creation
+    mockPiCreate.mockResolvedValueOnce({ id: 'pi_fresh', client_secret: 'pi_fresh_secret' });
+
+    const res = await req(port, 'POST', '/p/checkout/create-intent', {});
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.clientSecret).toBe('pi_fresh_secret');
+    expect(mockPiRetrieve).toHaveBeenCalledWith('pi_stale');
   });
 
   it('rejects OWNER role', async () => {

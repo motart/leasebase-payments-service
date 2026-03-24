@@ -14,6 +14,7 @@ import { insertAuditLog } from '../lib/audit';
 import { calculateFee } from '../lib/fees';
 import { reconcilePaymentAccount } from '../lib/reconcile-payment-account';
 import { getOrCreateStripeCustomer } from '../lib/stripe-customers';
+import { reconcileTransaction, type StaleTransaction } from '../lib/reconcile-transaction';
 
 const router = Router();
 
@@ -230,6 +231,47 @@ router.get('/mine/charges', requireAuth, async (req: Request, res: Response, nex
   } catch (err) { next(err); }
 });
 
+// ── Tenant: Pre-flight readiness check for payment ───────────────────────
+
+router.get(
+  '/checkout/preflight',
+  requireAuth,
+  requireRole(UserRole.TENANT),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const user = (req as AuthenticatedRequest).user;
+      const issues: string[] = [];
+
+      if (!isStripeConfigured()) {
+        issues.push('STRIPE_NOT_CONFIGURED');
+      }
+
+      const lease = await getActiveLeaseForTenant(user.userId, user.orgId);
+      if (!lease) {
+        issues.push('NO_ACTIVE_LEASE');
+      } else if (lease.rent_amount == null || lease.rent_amount <= 0) {
+        issues.push('NO_RENT_CONFIGURED');
+      }
+
+      // Check payment account (fast path only — no reconciliation on preflight)
+      const account = await queryOne<{ status: string }>(
+        `SELECT status FROM payment_account WHERE org_id = $1 AND status = 'ACTIVE'`,
+        [user.orgId],
+      );
+      if (!account) {
+        issues.push('NO_PAYMENT_ACCOUNT');
+      }
+
+      res.json({
+        data: {
+          ready: issues.length === 0,
+          issues,
+        },
+      });
+    } catch (err) { next(err); }
+  },
+);
+
 // ── Tenant: Embedded Payment — create PaymentIntent for in-app checkout ──────
 
 router.post(
@@ -293,14 +335,28 @@ router.post(
         });
       }
 
-      const existingTxn = await queryOne<{ id: string }>(
-        `SELECT id FROM payment_transaction WHERE charge_id = $1 AND status IN ('PENDING', 'PROCESSING')`,
+      // Check for existing PENDING/PROCESSING transaction and reconcile stale ones
+      const existingTxn = await queryOne<StaleTransaction>(
+        `SELECT id, stripe_payment_intent_id, status, charge_id FROM payment_transaction WHERE charge_id = $1 AND status IN ('PENDING', 'PROCESSING')`,
         [charge!.id],
       );
       if (existingTxn) {
-        return res.status(409).json({
-          error: { code: 'PAYMENT_IN_PROGRESS', message: 'A payment is already in progress for this charge' },
-        });
+        // Reconcile against Stripe — may clear stale transactions
+        const resolved = await reconcileTransaction(existingTxn);
+        if (resolved === 'processing') {
+          return res.status(409).json({
+            error: { code: 'PAYMENT_IN_PROGRESS', message: 'A payment is currently being processed for this charge' },
+          });
+        }
+        if (resolved === 'succeeded') {
+          return res.status(409).json({
+            error: { code: 'ALREADY_PAID', message: 'This charge has already been paid' },
+          });
+        }
+        // 'stale' or 'unknown' — proceed with new intent creation
+        if (resolved === 'stale') {
+          logger.info({ chargeId: charge!.id, staleTxnId: existingTxn.id }, 'Stale transaction cleared — proceeding with new intent');
+        }
       }
 
       // 3. Resolve payment account (with reconciliation)
