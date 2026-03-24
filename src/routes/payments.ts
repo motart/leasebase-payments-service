@@ -15,6 +15,7 @@ import { calculateFee } from '../lib/fees';
 import { reconcilePaymentAccount } from '../lib/reconcile-payment-account';
 import { getOrCreateStripeCustomer } from '../lib/stripe-customers';
 import { reconcileTransaction, type StaleTransaction } from '../lib/reconcile-transaction';
+import { metricIntentCreated, metricCheckoutBlocked, metricStaleIntentCleared } from '../lib/metrics';
 
 const router = Router();
 
@@ -330,6 +331,7 @@ router.post(
       }
 
       if (charge!.status === 'PAID') {
+        metricCheckoutBlocked({ orgId: user.orgId, chargeId: charge!.id, reason: 'ALREADY_PAID' });
         return res.status(409).json({
           error: { code: 'ALREADY_PAID', message: 'This charge has already been paid' },
         });
@@ -355,7 +357,7 @@ router.post(
         }
         // 'stale' or 'unknown' — proceed with new intent creation
         if (resolved === 'stale') {
-          logger.info({ chargeId: charge!.id, staleTxnId: existingTxn.id }, 'Stale transaction cleared — proceeding with new intent');
+          metricStaleIntentCleared({ orgId: user.orgId, chargeId: charge!.id, transactionId: existingTxn.id });
         }
       }
 
@@ -379,12 +381,13 @@ router.post(
       }
 
       if (!account) {
+        metricCheckoutBlocked({ orgId: user.orgId, chargeId: charge!.id, reason: 'NO_PAYMENT_ACCOUNT' });
         return res.status(422).json({
           error: { code: 'NO_PAYMENT_ACCOUNT', message: 'The property owner has not enabled payments yet. Contact them for assistance.' },
         });
       }
 
-      // 4. Create Stripe Customer (or reuse existing) for the tenant
+      // 4. Create Stripe Customer
       const customerId = await getOrCreateStripeCustomer(user.userId, user.orgId, user.email);
 
       // 5. Create PaymentIntent on platform account with destination charge
@@ -433,10 +436,15 @@ router.post(
         });
       }
 
-      logger.info(
-        { chargeId: charge!.id, txnId: txn?.id, piId: paymentIntent.id, amount: chargeAmount },
-        'PaymentIntent created for embedded tenant checkout',
-      );
+      metricIntentCreated({
+        orgId: user.orgId,
+        leaseId: lease.lease_id,
+        chargeId: charge!.id,
+        transactionId: txn?.id,
+        paymentIntentId: paymentIntent.id,
+        amount: chargeAmount,
+        tenantUserId: user.userId,
+      });
 
       res.status(201).json({
         data: {
