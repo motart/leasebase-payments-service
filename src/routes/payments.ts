@@ -13,6 +13,7 @@ import { getTenantLeaseLinks, tenantOwnsLease } from '../data/tenant-queries';
 import { insertAuditLog } from '../lib/audit';
 import { calculateFee } from '../lib/fees';
 import { reconcilePaymentAccount } from '../lib/reconcile-payment-account';
+import { getOrCreateStripeCustomer } from '../lib/stripe-customers';
 
 const router = Router();
 
@@ -229,7 +230,174 @@ router.get('/mine/charges', requireAuth, async (req: Request, res: Response, nex
   } catch (err) { next(err); }
 });
 
-// ── Tenant: Stripe Checkout for rent payment ─────────────────────────────────
+// ── Tenant: Embedded Payment — create PaymentIntent for in-app checkout ──────
+
+router.post(
+  '/checkout/create-intent',
+  requireAuth,
+  requireRole(UserRole.TENANT),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!isStripeConfigured()) {
+        return res.status(503).json({
+          error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+        });
+      }
+
+      const user = (req as AuthenticatedRequest).user;
+
+      // 1. Resolve tenant → active lease
+      const lease = await getActiveLeaseForTenant(user.userId, user.orgId);
+      if (!lease) {
+        throw new NotFoundError('No active lease found');
+      }
+
+      if (lease.rent_amount == null || lease.rent_amount <= 0) {
+        return res.status(422).json({
+          error: { code: 'NO_RENT_CONFIGURED', message: 'Rent amount is not configured for this lease. Contact your property owner.' },
+        });
+      }
+
+      // 2. Find or create PENDING charge
+      const now = new Date();
+      const billingPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      const idempotencyKey = `${lease.lease_id}:${billingPeriod}:RENT`;
+
+      let charge = await queryOne<{ id: string; amount: number; status: string }>(
+        `SELECT id, amount, status FROM charge WHERE idempotency_key = $1`,
+        [idempotencyKey],
+      );
+
+      if (!charge) {
+        charge = await queryOne<{ id: string; amount: number; status: string }>(
+          `INSERT INTO charge (organization_id, lease_id, tenant_user_id, type, amount, currency, billing_period, due_date, idempotency_key, description)
+           VALUES ($1, $2, $3, 'RENT', $4, 'usd', $5::date, $5::date, $6, $7)
+           ON CONFLICT (idempotency_key) DO UPDATE SET id = charge.id
+           RETURNING id, amount, status`,
+          [user.orgId, lease.lease_id, user.userId, lease.rent_amount, billingPeriod, idempotencyKey, `Rent for ${billingPeriod}`],
+        );
+
+        await insertAuditLog({
+          organizationId: user.orgId,
+          entityType: 'CHARGE',
+          entityId: charge!.id,
+          action: 'CREATED',
+          newStatus: 'PENDING',
+          actorType: 'SYSTEM',
+        });
+      }
+
+      if (charge!.status === 'PAID') {
+        return res.status(409).json({
+          error: { code: 'ALREADY_PAID', message: 'This charge has already been paid' },
+        });
+      }
+
+      const existingTxn = await queryOne<{ id: string }>(
+        `SELECT id FROM payment_transaction WHERE charge_id = $1 AND status IN ('PENDING', 'PROCESSING')`,
+        [charge!.id],
+      );
+      if (existingTxn) {
+        return res.status(409).json({
+          error: { code: 'PAYMENT_IN_PROGRESS', message: 'A payment is already in progress for this charge' },
+        });
+      }
+
+      // 3. Resolve payment account (with reconciliation)
+      let account = await queryOne<{ id: string; stripe_account_id: string; default_fee_percent: number; status: string }>(
+        `SELECT id, stripe_account_id, default_fee_percent, status FROM payment_account WHERE org_id = $1 AND status = 'ACTIVE'`,
+        [user.orgId],
+      );
+
+      if (!account) {
+        const staleAccount = await queryOne<{ id: string; stripe_account_id: string; default_fee_percent: number; status: string }>(
+          `SELECT id, stripe_account_id, default_fee_percent, status FROM payment_account WHERE org_id = $1`,
+          [user.orgId],
+        );
+        if (staleAccount) {
+          const reconciled = await reconcilePaymentAccount(staleAccount, user.orgId);
+          if (reconciled) {
+            account = { id: staleAccount.id, ...reconciled };
+          }
+        }
+      }
+
+      if (!account) {
+        return res.status(422).json({
+          error: { code: 'NO_PAYMENT_ACCOUNT', message: 'The property owner has not enabled payments yet. Contact them for assistance.' },
+        });
+      }
+
+      // 4. Create Stripe Customer (or reuse existing) for the tenant
+      const customerId = await getOrCreateStripeCustomer(user.userId, user.orgId, user.email);
+
+      // 5. Create PaymentIntent on platform account with destination charge
+      const chargeAmount = charge!.amount;
+      const feeAmount = calculateFee(chargeAmount, account.default_fee_percent);
+      const stripe = getStripe();
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: chargeAmount,
+        currency: 'usd',
+        customer: customerId,
+        automatic_payment_methods: { enabled: true },
+        application_fee_amount: feeAmount,
+        transfer_data: { destination: account.stripe_account_id },
+        metadata: {
+          charge_id: charge!.id,
+          lease_id: lease.lease_id,
+          tenant_user_id: user.userId,
+          org_id: user.orgId,
+          source: 'TENANT_PORTAL',
+        },
+      });
+
+      // 6. Create payment_transaction (PENDING)
+      const txnIdempotencyKey = `pi-txn:${charge!.id}:${paymentIntent.id}`;
+      const txn = await queryOne<{ id: string }>(
+        `INSERT INTO payment_transaction
+          (organization_id, charge_id, lease_id, tenant_user_id, amount, currency, method, status,
+           stripe_payment_intent_id, application_fee_amount, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, 'usd', 'CARD', 'PENDING', $6, $7, $8)
+         ON CONFLICT (idempotency_key) DO NOTHING
+         RETURNING id`,
+        [user.orgId, charge!.id, lease.lease_id, user.userId, chargeAmount, paymentIntent.id, feeAmount, txnIdempotencyKey],
+      );
+
+      if (txn) {
+        await insertAuditLog({
+          organizationId: user.orgId,
+          entityType: 'PAYMENT_TRANSACTION',
+          entityId: txn.id,
+          action: 'CREATED',
+          newStatus: 'PENDING',
+          metadata: { stripe_payment_intent_id: paymentIntent.id, charge_id: charge!.id, source: 'TENANT_PORTAL' },
+          actorType: 'USER',
+          actorId: user.userId,
+        });
+      }
+
+      logger.info(
+        { chargeId: charge!.id, txnId: txn?.id, piId: paymentIntent.id, amount: chargeAmount },
+        'PaymentIntent created for embedded tenant checkout',
+      );
+
+      res.status(201).json({
+        data: {
+          clientSecret: paymentIntent.client_secret,
+          paymentIntentId: paymentIntent.id,
+          publishableKey: getPublishableKey(),
+          amount: chargeAmount,
+          currency: 'usd',
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ── Tenant: Stripe Checkout for rent payment (legacy — kept for backward compat) ──
 
 router.post(
   '/checkout',
