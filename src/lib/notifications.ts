@@ -125,7 +125,7 @@ export async function sendAutopayFailureEmail(params: {
     ${retryInfo ? `<p style="color: #334155;">${retryInfo}</p>` : ''}
     <p style="color: #334155;">You can also make a manual payment at any time through your tenant portal.</p>
     <hr style="border: none; border-top: 1px solid #E2E8F0; margin: 24px 0;" />
-    <p style="color: #64748b; font-size: 13px;">If you believe this is an error, please check your payment method or contact your property manager.</p>
+    <p style="color: #64748b; font-size: 13px;">If you believe this is an error, please check your payment method or contact your property owner.</p>
     <p style="color: #94a3b8; font-size: 12px;">— LeaseBase · Property Performance Platform</p>
   </div>
 </body></html>`.trim();
@@ -164,7 +164,7 @@ export async function sendRetryExhaustedEmail(params: {
     <p style="color: #334155;"><strong>Please make a manual payment through your tenant portal as soon as possible to avoid late fees.</strong></p>
     <p style="color: #334155;">You may also want to check or update your saved payment method.</p>
     <hr style="border: none; border-top: 1px solid #E2E8F0; margin: 24px 0;" />
-    <p style="color: #64748b; font-size: 13px;">Contact your property manager if you need assistance.</p>
+    <p style="color: #64748b; font-size: 13px;">Contact your property owner if you need assistance.</p>
     <p style="color: #94a3b8; font-size: 12px;">— LeaseBase · Property Performance Platform</p>
   </div>
 </body></html>`.trim();

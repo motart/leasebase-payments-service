@@ -261,7 +261,7 @@ router.post(
         return res.status(422).json({
           error: {
             code: 'NO_RENT_CONFIGURED',
-            message: 'Rent amount is not configured for this lease. Contact your property manager.',
+            message: 'Rent amount is not configured for this lease. Contact your property owner.',
           },
         });
       }
@@ -321,7 +321,7 @@ router.post(
       );
       if (!account) {
         return res.status(422).json({
-          error: { code: 'NO_PAYMENT_ACCOUNT', message: 'Property manager has not set up payments' },
+          error: { code: 'NO_PAYMENT_ACCOUNT', message: 'The property owner has not enabled payments yet. Contact them for assistance.' },
         });
       }
 
