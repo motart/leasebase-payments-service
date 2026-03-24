@@ -9,7 +9,7 @@
  */
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import type Stripe from 'stripe';
-import { logger, queryOne, getPool } from '@leasebase/service-common';
+import { logger, queryOne, getPool, emitNotification } from '@leasebase/service-common';
 import { getStripe, getWebhookSecrets, isStripeConfigured } from '../stripe/client';
 import { getLeaseDetails } from '../data/lease-queries';
 import { getTenantEmail } from '../data/tenant-queries';
@@ -322,8 +322,26 @@ async function handlePaymentIntentSucceeded(event: Stripe.Event): Promise<void> 
     ).catch((err) => logger.warn({ err, chargeId: txn.charge_id }, 'Failed to update autopay attempt_log'));
   }
 
-  // 3. TODO: Publish PaymentSucceeded event to EventBridge
-  //    (notification-service will consume → send "payment received" push to owner)
+  // 3. In-app notification (dual-write alongside direct SES emails)
+  if (receiptData && txn.tenant_user_id) {
+    emitNotification({
+      organizationId: txn.organization_id,
+      recipientUserIds: [txn.tenant_user_id],
+      eventType: 'payment_succeeded',
+      title: 'Payment received',
+      body: `Your payment of $${(txn.amount / 100).toFixed(2)} has been received. Receipt #${receiptData.receipt_number}.`,
+      relatedType: 'payment',
+      relatedId: txn.id,
+      audience: 'tenant',
+      templateData: {
+        formattedAmount: `$${(txn.amount / 100).toFixed(2)}`,
+        receiptNumber: receiptData.receipt_number,
+        amount: txn.amount,
+        currency: txn.currency,
+      },
+      metadata: { receiptNumber: receiptData.receipt_number, amount: txn.amount },
+    }).catch(() => {});
+  }
 }
 
 // ── Payment Failure ──────────────────────────────────────────────────────────

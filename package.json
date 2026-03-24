@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-sesv2": "^3.1009.0",
-    "@leasebase/service-common": "^2.0.5",
+    "@leasebase/service-common": "file:../leasebase-service-common",
     "express": "^4.21.0",
     "stripe": "^17.4.0",
     "zod": "^3.23.0"
