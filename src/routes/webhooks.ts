@@ -20,6 +20,7 @@ import {
   sendAutopayFailureEmail,
   sendRetryExhaustedEmail,
 } from '../lib/notifications';
+import { deriveConnectState } from '../lib/connect-status';
 
 const router = Router();
 
@@ -656,17 +657,7 @@ async function handleAccountUpdated(event: Stripe.Event): Promise<void> {
   const account = event.data.object as Stripe.Account;
   logger.info({ accountId: account.id, chargesEnabled: account.charges_enabled }, 'Account updated');
 
-  let status = 'ONBOARDING_INCOMPLETE';
-  if (account.charges_enabled && account.payouts_enabled) {
-    status = 'ACTIVE';
-  } else if (account.requirements?.disabled_reason) {
-    status = 'RESTRICTED';
-  } else if (
-    account.requirements?.currently_due?.length === 0 &&
-    account.requirements?.pending_verification?.length
-  ) {
-    status = 'PENDING_VERIFICATION';
-  }
+  const derived = deriveConnectState(account);
 
   await queryOne(
     `UPDATE payment_account
@@ -674,11 +665,11 @@ async function handleAccountUpdated(event: Stripe.Event): Promise<void> {
          capabilities = $4, requirements = $5, updated_at = NOW()
      WHERE stripe_account_id = $6`,
     [
-      status,
-      account.charges_enabled,
-      account.payouts_enabled,
-      JSON.stringify(account.capabilities || {}),
-      JSON.stringify(account.requirements || {}),
+      derived.status,
+      derived.charges_enabled,
+      derived.payouts_enabled,
+      derived.capabilities,
+      derived.requirements,
       account.id,
     ],
   );
